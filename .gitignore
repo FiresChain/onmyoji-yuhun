@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+/docs/research/appendices/*.private.json
+/docs/research/appendices/*.private*.json
+/docs/research/appendices/*private*.json
+/docs/research/appendices/yyx_*.json
+/docs/research/appendices/teamcodes.private.json
+/data/private/
+/ui/.env
+/ui/.env.*
+!/ui/.env.example

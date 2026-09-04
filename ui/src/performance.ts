@@ -1,0 +1,396 @@
+export type PerformanceOperation = "team-calculation" | "analysis" | "simulation";
+
+export interface PerformanceStageTiming {
+  readonly name: string;
+  readonly elapsedMs: number;
+}
+
+export interface PerformanceTargetTiming {
+  readonly index: number;
+  readonly elapsedMs: number;
+  readonly candidateCount: number;
+  readonly candidateCombinations: number;
+  readonly evaluatedCombinations: number;
+  readonly exact: boolean | null;
+  readonly stageTimings: readonly PerformanceStageTiming[];
+}
+
+export interface PerformanceDeviceInfo {
+  readonly logicalCores: number | null;
+  readonly memoryGiB: number | null;
+  readonly platform: string | null;
+  readonly browserName: string | null;
+  readonly browserMajorVersion: string | null;
+  readonly wasm: boolean;
+  readonly webGpu: boolean;
+  readonly gpuAdapter: string | null;
+  readonly gpuMaxBufferSize: number | null;
+  readonly gpuMaxComputeInvocationsPerWorkgroup: number | null;
+  readonly gpuMaxComputeWorkgroupsPerDimension: number | null;
+  readonly crossOriginIsolated: boolean;
+}
+
+export interface PerformanceGpuInfo {
+  readonly adapter: string | null;
+  readonly maxBufferSize: number | null;
+  readonly maxComputeInvocationsPerWorkgroup: number | null;
+  readonly maxComputeWorkgroupsPerDimension: number | null;
+}
+
+export interface PerformanceCpuBenchmark {
+  readonly id: "cpu-yuhun-search-js-v1";
+  readonly durationMs: number;
+  readonly evaluatedCombinations: number;
+  readonly evaluationsPerSecond: number;
+  readonly checksum: number;
+}
+
+export interface PerformanceMemoryBenchmark {
+  readonly id: "memory-f64-stream-v1";
+  readonly durationMs: number;
+  readonly bytesProcessed: number;
+  readonly mebibytesPerSecond: number;
+  readonly checksum: number;
+}
+
+export interface PerformanceBenchmark {
+  readonly id: "onmyoji-hardware-profile-v1";
+  readonly measuredAt: string;
+  readonly environmentKey: string;
+  readonly totalDurationMs: number;
+  readonly cpuSingle: PerformanceCpuBenchmark;
+  readonly cpuMulti: PerformanceCpuBenchmark;
+  readonly cpuMultiWorkerCount: number;
+  readonly cpuParallelSpeedup: number;
+  readonly memory: PerformanceMemoryBenchmark;
+  readonly gpu: PerformanceGpuBenchmark;
+}
+
+export interface PerformanceGpuBenchmark {
+  readonly id: "gpu-f32-compute-v1";
+  readonly measuredAt: string;
+  readonly status: "completed" | "unavailable" | "failed";
+  readonly initializationMs: number | null;
+  readonly durationMs: number | null;
+  readonly elementsPerDispatch: number;
+  readonly iterationsPerElement: number;
+  readonly dispatches: number;
+  readonly iterationsPerSecond: number | null;
+  readonly uploadMebibytesPerSecond: number | null;
+  readonly readbackMebibytesPerSecond: number | null;
+  readonly verified: boolean;
+  readonly reason: string | null;
+}
+
+export interface PerformanceSchedulerInfo {
+  readonly id: "workflow-worker-lanes-v1";
+  readonly mode: "single-worker" | "parallel-workloads";
+  readonly workerCount: number;
+}
+
+export interface PerformanceRecord {
+  readonly schemaVersion: 3;
+  readonly kind: "onmyoji-yuhun-performance";
+  readonly id: string;
+  readonly recordedAt: string;
+  readonly operation: PerformanceOperation;
+  readonly itemCount: number | null;
+  readonly targetCount: number | null;
+  readonly metricCount: number | null;
+  readonly categoryCount: number | null;
+  readonly sampleSize: number | null;
+  readonly candidateCount: number;
+  readonly candidateCombinations: number;
+  readonly evaluatedCombinations: number;
+  readonly successfulCount: number;
+  readonly noMatchCount: number;
+  readonly unsupportedCount: number;
+  readonly disabledCount: number;
+  readonly exactCount: number;
+  readonly approximateCount: number;
+  readonly elapsedMs: number;
+  readonly stages: readonly PerformanceStageTiming[];
+  readonly targets: readonly PerformanceTargetTiming[];
+  readonly device: PerformanceDeviceInfo;
+  readonly benchmark: PerformanceBenchmark | null;
+  /** Reserved for a future D1/API sync without changing the local schema. */
+  readonly uploadState: "local-only";
+  readonly algorithm: {
+    readonly id: string;
+    readonly runtime: "typescript" | "wasm" | "webgpu";
+    readonly parameters: Readonly<Record<string, string | number | boolean>>;
+    readonly workerCount: number;
+  };
+  readonly scheduler: PerformanceSchedulerInfo;
+  readonly app: { readonly version: string; readonly buildId: string | null };
+  readonly evaluatedPerSecond: number | null;
+  readonly endToEndEvaluatedPerSecond: number | null;
+  readonly pruningRate: number | null;
+  readonly searchElapsedMs: number;
+  readonly targetElapsedMs: number;
+  readonly criticalPathMs: number;
+  readonly overheadMs: number;
+  /** Anonymous input-shape key for comparing like-for-like runs. */
+  readonly workloadKey: string;
+  readonly metricDistribution: Readonly<Record<string, number>>;
+}
+
+const STORAGE_KEY = "onmyoji-yuhun-performance-history-v1";
+const BENCHMARK_STORAGE_KEY = "onmyoji-yuhun-performance-benchmark-v2";
+const GPU_STORAGE_KEY = "onmyoji-yuhun-performance-gpu-v1";
+const MAX_RECORDS = 50;
+const BENCHMARK_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+
+function storage(): Storage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeDevice(value: unknown): PerformanceDeviceInfo {
+  const device = isRecord(value) ? value : {};
+  return {
+    logicalCores: typeof device.logicalCores === "number" ? device.logicalCores : null,
+    memoryGiB: typeof device.memoryGiB === "number" ? device.memoryGiB : null,
+    platform: typeof device.platform === "string" ? device.platform : null,
+    browserName: typeof device.browserName === "string" ? device.browserName : null,
+    browserMajorVersion: typeof device.browserMajorVersion === "string" ? device.browserMajorVersion : null,
+    wasm: device.wasm === true,
+    webGpu: device.webGpu === true,
+    gpuAdapter: typeof device.gpuAdapter === "string" ? device.gpuAdapter : null,
+    gpuMaxBufferSize: typeof device.gpuMaxBufferSize === "number" ? device.gpuMaxBufferSize : null,
+    gpuMaxComputeInvocationsPerWorkgroup: typeof device.gpuMaxComputeInvocationsPerWorkgroup === "number" ? device.gpuMaxComputeInvocationsPerWorkgroup : null,
+    gpuMaxComputeWorkgroupsPerDimension: typeof device.gpuMaxComputeWorkgroupsPerDimension === "number" ? device.gpuMaxComputeWorkgroupsPerDimension : null,
+    crossOriginIsolated: device.crossOriginIsolated === true
+  };
+}
+
+export function loadPerformanceHistory(): PerformanceRecord[] {
+  const local = storage();
+  if (local === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(local.getItem(STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((value) => normalizeRecord(value)).slice(0, MAX_RECORDS);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeRecord(value: unknown): PerformanceRecord[] {
+  if (!isRecord(value) || value.kind !== "onmyoji-yuhun-performance") return [];
+  if (value.schemaVersion === 3) {
+    const workerCount = isRecord(value.algorithm) && typeof value.algorithm.workerCount === "number"
+      ? value.algorithm.workerCount
+      : 1;
+    return [{
+      ...(value as unknown as PerformanceRecord),
+      device: normalizeDevice(value.device),
+      benchmark: normalizePerformanceBenchmark(value.benchmark),
+      scheduler: isRecord(value.scheduler)
+        ? value.scheduler as unknown as PerformanceSchedulerInfo
+        : schedulerInfo(workerCount)
+    }];
+  }
+  if (value.schemaVersion === 2) {
+    const legacy = value as unknown as Omit<PerformanceRecord, "schemaVersion" | "benchmark" | "scheduler">;
+    const workerCount = isRecord(value.algorithm) && typeof value.algorithm.workerCount === "number"
+      ? value.algorithm.workerCount
+      : 1;
+    return [{
+      ...legacy,
+      schemaVersion: 3,
+      device: normalizeDevice(value.device),
+      benchmark: null,
+      scheduler: schedulerInfo(workerCount)
+    }];
+  }
+  // Migrate the initial local-only schema so users do not lose history after an update.
+  if (value.schemaVersion !== 1) return [];
+  const candidateCombinations = typeof value.candidateCombinations === "number" ? value.candidateCombinations : 0;
+  const evaluatedCombinations = typeof value.evaluatedCombinations === "number" ? value.evaluatedCombinations : 0;
+  const elapsedMs = typeof value.elapsedMs === "number" ? value.elapsedMs : 0;
+  const targets = Array.isArray(value.targets) ? value.targets.map((target) => ({ ...target, stageTimings: [] })) : [];
+  const targetElapsedMs = targets.reduce((sum, target) => sum + (typeof target.elapsedMs === "number" ? target.elapsedMs : 0), 0);
+  return [{
+    ...(value as unknown as Omit<PerformanceRecord, "schemaVersion" | "algorithm" | "app" | "evaluatedPerSecond" | "endToEndEvaluatedPerSecond" | "pruningRate" | "searchElapsedMs" | "targetElapsedMs" | "criticalPathMs" | "overheadMs" | "targets" | "noMatchCount" | "unsupportedCount" | "disabledCount" | "exactCount" | "workloadKey" | "metricDistribution" | "benchmark" | "scheduler">),
+    schemaVersion: 3,
+    device: normalizeDevice(value.device),
+    targets,
+    algorithm: { id: "legacy-v1", runtime: "typescript", parameters: {}, workerCount: 1 },
+    scheduler: schedulerInfo(1),
+    benchmark: null,
+    app: { version: "unknown", buildId: null },
+    evaluatedPerSecond: elapsedMs > 0 ? evaluatedCombinations / (elapsedMs / 1000) : null,
+    endToEndEvaluatedPerSecond: elapsedMs > 0 ? evaluatedCombinations / (elapsedMs / 1000) : null,
+    pruningRate: candidateCombinations > 0 ? Math.max(0, Math.min(1, 1 - evaluatedCombinations / candidateCombinations)) : null,
+    searchElapsedMs: 0,
+    targetElapsedMs,
+    criticalPathMs: targetElapsedMs,
+    overheadMs: Math.max(0, elapsedMs - targetElapsedMs),
+    noMatchCount: 0,
+    unsupportedCount: 0,
+    disabledCount: 0,
+    exactCount: 0,
+    workloadKey: "legacy-v1",
+    metricDistribution: {}
+  }];
+}
+
+export function appendPerformanceRecord(record: PerformanceRecord): PerformanceRecord[] {
+  const next = [record, ...loadPerformanceHistory()].slice(0, MAX_RECORDS);
+  const local = storage();
+  if (local !== null) {
+    try { local.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* local history is best effort */ }
+  }
+  return next;
+}
+
+export function clearPerformanceHistory(): void {
+  const local = storage();
+  if (local === null) return;
+  try { local.removeItem(STORAGE_KEY); } catch { /* local history is best effort */ }
+}
+
+function normalizePerformanceBenchmark(value: unknown): PerformanceBenchmark | null {
+  if (!isRecord(value)
+    || value.id !== "onmyoji-hardware-profile-v1"
+    || typeof value.measuredAt !== "string"
+    || typeof value.environmentKey !== "string"
+    || typeof value.totalDurationMs !== "number"
+    || !isRecord(value.cpuSingle)
+    || !isRecord(value.cpuMulti)
+    || !isRecord(value.memory)
+    || normalizeGpuBenchmark(value.gpu) === null
+    || typeof value.cpuMultiWorkerCount !== "number"
+    || typeof value.cpuParallelSpeedup !== "number") return null;
+  return value as unknown as PerformanceBenchmark;
+}
+
+function normalizeGpuBenchmark(value: unknown): PerformanceGpuBenchmark | null {
+  if (!isRecord(value)
+    || value.id !== "gpu-f32-compute-v1"
+    || typeof value.measuredAt !== "string"
+    || !["completed", "unavailable", "failed"].includes(String(value.status))
+    || typeof value.elementsPerDispatch !== "number"
+    || typeof value.iterationsPerElement !== "number"
+    || typeof value.dispatches !== "number") return null;
+  return value as unknown as PerformanceGpuBenchmark;
+}
+
+function loadStored<T>(key: string, normalize: (value: unknown) => T | null): T | null {
+  const local = storage();
+  if (local === null) return null;
+  try { return normalize(JSON.parse(local.getItem(key) ?? "null")); } catch { return null; }
+}
+
+export function loadPerformanceBenchmark(): PerformanceBenchmark | null {
+  const value = loadStored(BENCHMARK_STORAGE_KEY, normalizePerformanceBenchmark);
+  if (value === null || typeof navigator === "undefined") return value;
+  const measuredAt = Date.parse(value.measuredAt);
+  const fresh = Number.isFinite(measuredAt) && Date.now() - measuredAt >= 0 && Date.now() - measuredAt < BENCHMARK_MAX_AGE_MS;
+  return fresh && value.environmentKey === performanceEnvironmentKey(capturePerformanceDevice()) ? value : null;
+}
+
+export function savePerformanceBenchmark(value: PerformanceBenchmark): void {
+  const local = storage();
+  if (local === null) return;
+  try { local.setItem(BENCHMARK_STORAGE_KEY, JSON.stringify(value)); } catch { /* local benchmark is best effort */ }
+}
+
+function loadPerformanceGpu(): PerformanceGpuInfo | null {
+  const local = storage();
+  if (local === null) return null;
+  try {
+    const value: unknown = JSON.parse(local.getItem(GPU_STORAGE_KEY) ?? "null");
+    if (!isRecord(value)) return null;
+    return {
+      adapter: typeof value.adapter === "string" ? value.adapter : null,
+      maxBufferSize: typeof value.maxBufferSize === "number" ? value.maxBufferSize : null,
+      maxComputeInvocationsPerWorkgroup: typeof value.maxComputeInvocationsPerWorkgroup === "number" ? value.maxComputeInvocationsPerWorkgroup : null,
+      maxComputeWorkgroupsPerDimension: typeof value.maxComputeWorkgroupsPerDimension === "number" ? value.maxComputeWorkgroupsPerDimension : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function savePerformanceGpu(value: PerformanceGpuInfo | null): void {
+  const local = storage();
+  if (local === null) return;
+  try {
+    if (value === null) local.removeItem(GPU_STORAGE_KEY);
+    else local.setItem(GPU_STORAGE_KEY, JSON.stringify(value));
+  } catch { /* local capability data is best effort */ }
+}
+
+export function schedulerInfo(workerCount: number): PerformanceSchedulerInfo {
+  const normalizedWorkerCount = Math.max(1, Math.floor(workerCount));
+  return {
+    id: "workflow-worker-lanes-v1",
+    mode: normalizedWorkerCount > 1 ? "parallel-workloads" : "single-worker",
+    workerCount: normalizedWorkerCount
+  };
+}
+
+export function performanceEnvironmentKey(device: PerformanceDeviceInfo): string {
+  return [
+    device.platform ?? "unknown-platform",
+    `${device.browserName ?? "unknown-browser"}:${device.browserMajorVersion ?? "unknown-version"}`,
+    `cores:${device.logicalCores ?? "unknown"}`,
+    `memory:${device.memoryGiB ?? "unknown"}`,
+    `gpu:${device.gpuAdapter ?? (device.webGpu ? "webgpu" : "none")}`
+  ].join("|");
+}
+
+function browserIdentity(userAgent: string): Pick<PerformanceDeviceInfo, "browserName" | "browserMajorVersion"> {
+  const matches: ReadonlyArray<readonly [string, RegExp]> = [
+    ["Edge", /Edg\/(\d+)/],
+    ["Firefox", /Firefox\/(\d+)/],
+    ["Chrome", /(?:Chrome|CriOS)\/(\d+)/],
+    ["Safari", /Version\/(\d+).+Safari/]
+  ];
+  for (const [name, pattern] of matches) {
+    const match = pattern.exec(userAgent);
+    if (match !== null) return { browserName: name, browserMajorVersion: match[1] ?? null };
+  }
+  return { browserName: null, browserMajorVersion: null };
+}
+
+export function capturePerformanceDevice(): PerformanceDeviceInfo {
+  if (typeof navigator === "undefined") {
+    return { logicalCores: null, memoryGiB: null, platform: null, browserName: null, browserMajorVersion: null, wasm: false, webGpu: false, gpuAdapter: null, gpuMaxBufferSize: null, gpuMaxComputeInvocationsPerWorkgroup: null, gpuMaxComputeWorkgroupsPerDimension: null, crossOriginIsolated: false };
+  }
+  const extendedNavigator = navigator as Navigator & { deviceMemory?: number; gpu?: unknown };
+  const browser = browserIdentity(navigator.userAgent ?? "");
+  const gpu = loadPerformanceGpu();
+  return {
+    logicalCores: Number.isSafeInteger(navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : null,
+    memoryGiB: typeof extendedNavigator.deviceMemory === "number" && Number.isFinite(extendedNavigator.deviceMemory)
+      ? extendedNavigator.deviceMemory
+      : null,
+    platform: typeof navigator.platform === "string" && navigator.platform !== "" ? navigator.platform : null,
+    ...browser,
+    wasm: typeof WebAssembly !== "undefined",
+    webGpu: extendedNavigator.gpu !== undefined,
+    gpuAdapter: gpu?.adapter ?? null,
+    gpuMaxBufferSize: gpu?.maxBufferSize ?? null,
+    gpuMaxComputeInvocationsPerWorkgroup: gpu?.maxComputeInvocationsPerWorkgroup ?? null,
+    gpuMaxComputeWorkgroupsPerDimension: gpu?.maxComputeWorkgroupsPerDimension ?? null,
+    crossOriginIsolated: typeof crossOriginIsolated === "boolean" && crossOriginIsolated
+  };
+}
+
+export function newPerformanceId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export const PERFORMANCE_STORAGE_KEY = STORAGE_KEY;
+export const PERFORMANCE_BENCHMARK_STORAGE_KEY = BENCHMARK_STORAGE_KEY;
