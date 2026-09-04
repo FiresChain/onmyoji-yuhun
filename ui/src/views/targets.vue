@@ -351,12 +351,20 @@ const importCategoryId = computed({
 const importCategories = computed(() => catalog.value.find((domain) => domain.id === importDomainId.value)?.categories ?? []);
 const importScenes = computed(() => importCategories.value.find((category) => category.id === importCategoryId.value)?.scenes ?? []);
 const selectedScenes = computed(() => scenePaths.value.filter((scene) => selectedSceneIds.value.includes(scene.sceneId)));
+const selectedTeamTargets = computed(() => {
+  const selected = new Set(selectedSceneIds.value);
+  return store.teamTargets.filter((target) => selected.has(target.sceneId));
+});
+const selectedEnabledTeamTargetCount = computed(() => selectedTeamTargets.value.filter((target) => target.enabled).length);
+const selectedEnabledTeamMetricCount = computed(() => selectedTeamTargets.value
+  .filter((target) => target.enabled)
+  .reduce((sum, target) => sum + target.metricCount, 0));
 const resultScenes = computed(() => selectedScenes.value.filter((scene) => filteredTargetsForScene(scene.sceneId).length > 0));
 const visibleTeamTargets = computed(() => resultScenes.value.flatMap((scene) => filteredTargetsForScene(scene.sceneId)));
 const visibleEnabledTeamTargetCount = computed(() => visibleTeamTargets.value.filter((target) => target.enabled).length);
 const enabledTeamTargetDisplayCount = computed(() => teamSelectionMode.value === "smart"
   ? store.teamTargets.filter((target) => targetDisplayStatus(target) === "已启用").length
-  : store.enabledTeamTargets.length);
+  : selectedEnabledTeamTargetCount.value);
 const allVisibleTeamTargetsEnabled = computed(() => visibleTeamTargets.value.length > 0 && visibleTeamTargets.value.every((target) => target.enabled));
 const teamProgressEntries = computed(() => Object.values(store.teamCalculationProgress).filter((entry) => entry.status === "running"));
 const isTeamCalculationBusy = computed(() => store.busy === "正在计算阵容御魂搭配");
@@ -396,12 +404,15 @@ const selectedSceneSummaryValue = computed(() => isTeamCalculationBusy.value
   : String(selectedSceneIds.value.length));
 const importedTeamSummaryValue = computed(() => {
   if (!isTeamCalculationBusy.value) return String(store.teamTargets.length);
-  const total = teamSelectionMode.value === "smart" ? "-" : String(store.enabledTeamTargets.length);
+  const total = teamSelectionMode.value === "smart" ? "-" : String(selectedEnabledTeamTargetCount.value);
   return `${completedTeamTargetCount.value} / ${total}`;
 });
 const teamMetricSummaryValue = computed(() => {
-  if (!isTeamCalculationBusy.value) return String(store.enabledTeamMetricCount);
-  const total = teamSelectionMode.value === "smart" ? "-" : String(store.enabledTeamMetricCount);
+  const metricCount = teamSelectionMode.value === "smart"
+    ? store.enabledTeamMetricCount
+    : selectedEnabledTeamMetricCount.value;
+  if (!isTeamCalculationBusy.value) return String(metricCount);
+  const total = teamSelectionMode.value === "smart" ? "-" : String(metricCount);
   return `${completedTeamMetricCount.value} / ${total}`;
 });
 const activeTeamProgressLabel = computed(() => {
@@ -1848,7 +1859,7 @@ function ruleSummary(rule: PresetRule): string {
       <div class="team-calculation-toolbar-actions">
         <button v-if="store.busy === '正在计算阵容御魂搭配'" class="secondary" data-testid="pause-team-targets" @click="store.pauseTeamCalculation"><Pause :size="15" />暂停计算</button>
         <button v-else-if="store.teamCalculationPaused" class="primary" data-testid="resume-team-targets" :disabled="!store.snapshot" @click="store.resumeTeamCalculation"><Play :size="15" />继续计算</button>
-        <button v-else class="primary" data-testid="calculate-team-targets" :disabled="!!store.busy || (teamSelectionMode !== 'smart' && store.enabledTeamTargets.length === 0) || (teamSelectionMode === 'smart' && store.teamTargets.length === 0) || !store.snapshot" @click="calculateVisibleTeamTargets"><Calculator :size="16" />计算已启动阵容</button>
+        <button v-else class="primary" data-testid="calculate-team-targets" :disabled="!!store.busy || (teamSelectionMode !== 'smart' && selectedEnabledTeamTargetCount === 0) || (teamSelectionMode === 'smart' && store.teamTargets.length === 0) || !store.snapshot" @click="calculateVisibleTeamTargets"><Calculator :size="16" />计算已启动阵容</button>
       </div>
     </div>
 

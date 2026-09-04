@@ -870,11 +870,18 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     resumingTeamCalculation = false;
     lastTeamCalculationOptions = options;
     const smartMode = options.mode === "smart";
-    if (enabledTeamTargets.value.length === 0 && (!smartMode || teamTargets.value.length === 0)) {
-      error.value = { stage: "targets", code: "NO_TEAM_TARGET", path: "teamTargets", message: "请至少启用一条阵容或手动搭配目标" };
+    const selectedSceneIds = new Set(options.sceneIds ?? []);
+    const manualTargets = enabledTeamTargets.value
+      .filter((target) => selectedSceneIds.has(target.sceneId));
+    if (!smartMode && manualTargets.length === 0) {
+      error.value = { stage: "targets", code: "NO_TEAM_TARGET", path: "sceneIds", message: "请至少选中一个场景，并在其中启用一条阵容" };
       return;
     }
-    const allRequests = teamCalculationRequests();
+    if (smartMode && teamTargets.value.length === 0) {
+      error.value = { stage: "targets", code: "NO_TEAM_TARGET", path: "teamTargets", message: "请至少导入一条阵容或手动搭配目标" };
+      return;
+    }
+    const manualRequests = manualTargets.map((target) => teamCalculationRequestFor(target));
     const smartGroups = smartMode
       ? buildSmartTeamTargetGroups(teamTargets.value, options.sceneIds ?? [], options.difficultyDecreaseCount ?? "auto")
       : [];
@@ -884,7 +891,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     }
     const initialRequests = smartMode
       ? smartGroups.map((group) => teamCalculationRequestFor(group.targets[0]!))
-      : allRequests;
+      : manualRequests;
     const requests = resume
       ? initialRequests.filter((request) => teamCalculationFor(request.id) === null)
       : initialRequests;
@@ -902,7 +909,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     try {
       const runTargetIds = new Set((smartMode
         ? smartGroups.flatMap((group) => group.targets)
-        : enabledTeamTargets.value).map((target) => target.id));
+        : manualTargets).map((target) => target.id));
       const reports: TeamCalculationReportDTO[] = resume
         ? teamCalculations.value.filter((report) => runTargetIds.has(report.id))
         : [];
