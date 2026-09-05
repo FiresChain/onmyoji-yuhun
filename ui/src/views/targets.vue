@@ -46,8 +46,7 @@ import {
 import {
   TARGET_CATALOG,
   canonicalSceneId,
-  fetchSceneCatalog,
-  fetchPublishedTeamTargets,
+  fetchPublishedSceneData,
   findTargetScenesByGameSceneId,
   isCustomCatalogId,
   localCatalogOverlay,
@@ -570,13 +569,10 @@ onBeforeUnmount(() => {
 async function initializeCatalogAfterRestore(): Promise<void> {
   if (!viewMounted || !store.restoreCompleted || catalogInitializationStarted) return;
   catalogInitializationStarted = true;
-  if (!await loadPublishedCatalog(store.targetViewState)) return;
+  const publishedTargets = await loadPublishedCatalog(store.targetViewState);
+  if (publishedTargets === null) return;
   if (import.meta.env.MODE !== "test") {
-    try {
-      store.loadPublishedTeamTargets(await fetchPublishedTeamTargets());
-    } catch {
-      // Catalog remains usable when the optional target snapshot is unavailable.
-    }
+    store.loadPublishedTeamTargets(publishedTargets);
   }
   viewStateReady = true;
   store.setTargetViewState(localCatalogOverlay(catalog.value), selectedSceneIds.value, focusedSceneId.value, catalog.value);
@@ -593,10 +589,11 @@ async function hydrateTeamTargetInspections(): Promise<void> {
     .map((target) => store.inspectStoredTeamTarget(target.id)));
 }
 
-async function loadPublishedCatalog(savedState: typeof store.targetViewState): Promise<boolean> {
+async function loadPublishedCatalog(savedState: typeof store.targetViewState): Promise<readonly Record<string, unknown>[] | null> {
   catalogLoading.value = true;
   try {
-    const published = await fetchSceneCatalog();
+    const snapshot = await fetchPublishedSceneData();
+    const published = snapshot.catalog;
     catalog.value = cloneCatalog(mergePublishedCatalog(
       [...published, OTHER_TARGET_DOMAIN],
       savedState?.catalog
@@ -622,7 +619,7 @@ async function loadPublishedCatalog(savedState: typeof store.targetViewState): P
     managerDomainId.value = published[0]?.id ?? null;
     managerCategoryId.value = published[0]?.categories[0]?.id ?? null;
     managerSceneId.value = published[0]?.categories[0]?.scenes[0]?.id ?? null;
-    return true;
+    return snapshot.targets;
   } catch (reason) {
     catalog.value = [];
     selectedSceneIds.value = [];
@@ -638,7 +635,7 @@ async function loadPublishedCatalog(savedState: typeof store.targetViewState): P
       path: "sceneCatalog",
       message: reason instanceof Error ? reason.message : "关卡目录读取失败"
     };
-    return false;
+    return null;
   } finally {
     catalogLoading.value = false;
   }

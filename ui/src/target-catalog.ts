@@ -32,7 +32,7 @@ export interface TargetScenePath {
 }
 
 export interface SceneCatalogRecord {
-  readonly customSceneId: number;
+  readonly id: string;
   readonly gameSceneId: number | null;
   readonly level1: string;
   readonly level2: string;
@@ -44,21 +44,25 @@ export interface SceneCatalogRecord {
 }
 
 export interface SceneCatalogSnapshot {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly revision: string;
   readonly generatedAt: string;
   readonly scenes: readonly SceneCatalogRecord[];
-}
-
-export interface PublishedTeamTargetSnapshot {
-  readonly schemaVersion: 1;
-  readonly revision: string;
-  readonly generatedAt: string;
   readonly targets: readonly Record<string, unknown>[];
 }
 
-export const SCENE_CATALOG_URL = import.meta.env.VITE_SCENE_CATALOG_URL
-  ?? `${(import.meta.env.VITE_ONMYOJI_API_URL ?? "https://api.fireschain.org").replace(/\/$/, "")}/onmyoji/v1/scenes/catalog`;
+const ASSET_BASE_URL = (import.meta.env.VITE_ASSET_BASE_URL ?? "https://onmyoji-assets.fireschain.org").replace(/\/$/, "");
+
+/** Optional development override that bypasses the published version pointer. */
+export const SCENE_SNAPSHOT_URL = import.meta.env.VITE_SCENE_SNAPSHOT_URL;
+export const SCENE_VERSION_URL = import.meta.env.VITE_SCENE_VERSION_URL ?? `${ASSET_BASE_URL}/v1/version.json`;
+
+interface SceneVersionDocument {
+  readonly schemaVersion: 1;
+  readonly objects: {
+    readonly scenes: string | null;
+  };
+}
 
 export const TARGET_CATALOG: readonly TargetDomain[] = [
   {
@@ -328,13 +332,13 @@ export function findTargetScenesByGameSceneId(gameSceneId: number, catalog: read
 export function catalogFromSceneSnapshot(value: unknown): readonly TargetDomain[] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("关卡目录必须是对象");
   const snapshot = value as Partial<SceneCatalogSnapshot>;
-  if (snapshot.schemaVersion !== 1 || !Array.isArray(snapshot.scenes)) throw new TypeError("关卡目录版本无效");
+  if (snapshot.schemaVersion !== 2 || !Array.isArray(snapshot.scenes)) throw new TypeError("关卡目录版本无效");
   const domains: Array<{ id: string; label: string; categories: Array<{ id: string; label: string; scenes: TargetScene[] }> }> = [];
   const domainByLabel = new Map<string, typeof domains[number]>();
   for (const [index, raw] of snapshot.scenes.entries()) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new TypeError(`scenes[${index}] 必须是对象`);
     const record = raw as Partial<SceneCatalogRecord>;
-    if (!Number.isSafeInteger(record.customSceneId) || record.customSceneId! <= 0) throw new TypeError(`scenes[${index}].customSceneId 无效`);
+    if (typeof record.id !== "string" || record.id.trim() === "") throw new TypeError(`scenes[${index}].id 无效`);
     if (record.gameSceneId !== null && record.gameSceneId !== undefined && !Number.isSafeInteger(record.gameSceneId)) throw new TypeError(`scenes[${index}].gameSceneId 无效`);
     if (record.status !== "active" && record.status !== "archived") throw new TypeError(`scenes[${index}].status 无效`);
     if (record.status !== "active") continue;
@@ -349,11 +353,11 @@ export function catalogFromSceneSnapshot(value: unknown): readonly TargetDomain[
     }
     let category = domain.categories.find((entry) => entry.label === record.level2);
     if (category === undefined) {
-      category = { id: `catalog-category-${record.customSceneId}`, label: record.level2!, scenes: [] };
+      category = { id: `catalog-category-${record.id}`, label: record.level2!, scenes: [] };
       domain.categories.push(category);
     }
     category.scenes.push({
-      id: `scene-${record.customSceneId}`,
+      id: record.id,
       label: record.level3!,
       gameSceneId: record.gameSceneId ?? null
     });
@@ -362,16 +366,25 @@ export function catalogFromSceneSnapshot(value: unknown): readonly TargetDomain[
   return domains;
 }
 
-export async function fetchSceneCatalog(url = SCENE_CATALOG_URL): Promise<readonly TargetDomain[]> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`关卡目录读取失败（HTTP ${response.status}）`);
-  return catalogFromSceneSnapshot(await response.json());
+async function publishedSceneSnapshotUrl(): Promise<string> {
+  if (SCENE_SNAPSHOT_URL !== undefined && SCENE_SNAPSHOT_URL !== "") return SCENE_SNAPSHOT_URL;
+  const response = await fetch(SCENE_VERSION_URL);
+  if (!response.ok) throw new Error(`关卡版本读取失败（HTTP ${response.status}）`);
+  const version = await response.json() as Partial<SceneVersionDocument>;
+  const objectKey = version.objects?.scenes;
+  if (version.schemaVersion !== 1 || typeof objectKey !== "string" || !/^scenes\/snapshot-\d{8}T\d{9}Z\.json$/.test(objectKey)) {
+    throw new TypeError("关卡版本指针无效");
+  }
+  return `${ASSET_BASE_URL}/${objectKey}`;
 }
 
-export async function fetchPublishedTeamTargets(url = SCENE_CATALOG_URL.replace(/scenes\/catalog(?:\.json)?$/, "scenes/targets")): Promise<readonly Record<string, unknown>[]> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`阵容快照读取失败（HTTP ${response.status}）`);
-  const payload = await response.json() as Partial<PublishedTeamTargetSnapshot>;
-  if (payload.schemaVersion !== 1 || !Array.isArray(payload.targets)) throw new TypeError("阵容快照版本无效");
-  return payload.targets.filter((target): target is Record<string, unknown> => typeof target === "object" && target !== null && !Array.isArray(target));
+export async function fetchPublishedSceneData(url?: string): Promise<{ catalog: readonly TargetDomain[]; targets: readonly Record<string, unknown>[] }> {
+  const response = await fetch(url ?? await publishedSceneSnapshotUrl());
+  if (!response.ok) throw new Error(`关卡快照读取失败（HTTP ${response.status}）`);
+  const snapshot = await response.json() as Partial<SceneCatalogSnapshot>;
+  if (snapshot.schemaVersion !== 2 || !Array.isArray(snapshot.targets)) throw new TypeError("关卡快照版本无效");
+  return {
+    catalog: catalogFromSceneSnapshot(snapshot),
+    targets: snapshot.targets.filter((target): target is Record<string, unknown> => typeof target === "object" && target !== null && !Array.isArray(target))
+  };
 }

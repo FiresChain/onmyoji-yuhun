@@ -1,5 +1,5 @@
 const ASSET_BASE_URL = (import.meta.env.VITE_ASSET_BASE_URL ?? "https://onmyoji-assets.fireschain.org").replace(/\/$/, "");
-const CATALOG_URL = `${ASSET_BASE_URL}/v1/catalog.json`;
+const CATALOG_URL = `${ASSET_BASE_URL}/assets/catalog.json`;
 
 interface RawLocalizedNames {
   readonly zh?: string;

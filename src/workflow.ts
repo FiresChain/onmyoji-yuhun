@@ -290,15 +290,8 @@ export interface TeamCodeInspectionDTO {
     readonly sixStarRaw: unknown;
     readonly maxLevelRaw: unknown;
     readonly targetThresholdRaw: unknown;
-    readonly pendingConfirmationIds: readonly string[];
   }[];
   readonly editableTargets: readonly ManualShikigamiCalculationInput[];
-  readonly pendingConfirmations: readonly {
-    readonly id: string;
-    readonly kind: string;
-    readonly message: string;
-    readonly paths: readonly string[];
-  }[];
   readonly privateMetadataMasked: true;
   readonly participatesInCalculation: boolean;
 }
