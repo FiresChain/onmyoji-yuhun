@@ -61,7 +61,7 @@ import {
 import { TEAM_CALCULATION_ALGORITHM_VERSION, TEAM_CALCULATION_SEARCH_DEFAULTS } from "../../src/browser.js";
 import { ensurePerformanceBenchmark } from "./hardware-benchmark.js";
 import { uploadPerformanceRecord, uploadTeamTarget } from "./telemetry.js";
-import { decodeYuhunCode, encodeYuhunDraft, inspectTeamCode } from "./onmyoji-api.js";
+import { decodeTeamCode, decodeYuhunCode, encodeYuhunDraft } from "./onmyoji-api.js";
 
 export interface ImportedTeamTarget {
   readonly id: string;
@@ -1028,7 +1028,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     try {
       const normalizedCode = code.trim();
       if (teamTargets.value.some((target) => target.code === normalizedCode)) throw new Error("这条阵容码已经导入");
-      return await inspectTeamCode(normalizedCode);
+      return await decodeTeamCode(normalizedCode);
     } catch (reason) {
       fail(reason);
       return null;
@@ -1047,7 +1047,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       && target.inspection.editableTargets.every((item) => "yuhunConfigEnabled" in item)
     ) return target.inspection;
     try {
-      const inspection = await inspectTeamCode(target.code);
+      const inspection = await decodeTeamCode(target.code);
       teamTargets.value = teamTargets.value.map((item) => item.id === id ? { ...item, inspection } : item);
       return inspection;
     } catch (reason) {

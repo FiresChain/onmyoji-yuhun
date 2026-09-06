@@ -30,8 +30,8 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return payload.data;
 }
 
-export function inspectTeamCode(teamCode: string): Promise<TeamCodeInspectionDTO> {
-  return post("/onmyoji/v1/team-code/inspect", { teamCode });
+export function decodeTeamCode(teamCode: string): Promise<TeamCodeInspectionDTO> {
+  return post("/onmyoji/v1/team-code/decode", { teamCode });
 }
 
 export async function decodeYuhunCode(yuhunCode: string): Promise<YuhunFilterShare> {

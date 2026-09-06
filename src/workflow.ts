@@ -284,12 +284,6 @@ export interface TeamCodeInspectionDTO {
     readonly hasConfig: boolean;
     readonly attributeRangeCount: number;
     readonly mainStatSlotCount: number;
-    readonly attributeRangesRaw: unknown;
-    readonly mainStatsRaw: unknown;
-    readonly indicatorRaw: unknown;
-    readonly sixStarRaw: unknown;
-    readonly maxLevelRaw: unknown;
-    readonly targetThresholdRaw: unknown;
   }[];
   readonly editableTargets: readonly ManualShikigamiCalculationInput[];
   readonly privateMetadataMasked: true;

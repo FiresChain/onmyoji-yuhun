@@ -32,11 +32,11 @@ async function post(path: string, body: unknown): Promise<boolean> {
 }
 
 export function uploadPerformanceRecord(record: PerformanceRecord): Promise<boolean> {
-  return telemetryConsent() ? post("/onmyoji/v1/telemetry/performance", { record }) : Promise.resolve(false);
+  return telemetryConsent() ? post("/onmyoji/v1/collect", { kind: "performance", record }) : Promise.resolve(false);
 }
 
 export function uploadTeamTarget(target: { code: string; label: string; sceneId: string; sceneLabel: string; difficulty: number | null; metricCount: number }): Promise<boolean> {
-  return telemetryConsent() ? post("/onmyoji/v1/telemetry/team-target", { target }) : Promise.resolve(false);
+  return telemetryConsent() ? post("/onmyoji/v1/collect", { kind: "team-target", target }) : Promise.resolve(false);
 }
 
 export function telemetryApiUrl(): string { return API_URL; }
