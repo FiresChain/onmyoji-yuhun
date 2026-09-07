@@ -244,11 +244,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   let snapshotNeedsPersist = false;
   let sessionReady = false;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let persistQueue: Promise<void> = Promise.resolve();
   let persistenceWarningShown = false;
   let nextTeamTargetId = 1;
   let nextPresetRuleId = 1;
   let lastTeamCalculationOptions: TeamCalculationRunOptions = {};
   let resumingTeamCalculation = false;
+  let teamCalculationGeneration = 0;
 
   function now(): number {
     return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
@@ -481,6 +483,15 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     teamCalculationProgress.value = completed;
   }
 
+  function markTeamCalculationPendingAfterPause(): void {
+    const next = Object.fromEntries(Object.entries(teamCalculationProgress.value).map(([id, entry]) => [id, {
+      ...entry,
+      status: entry.status === "running" ? "pending" as const : entry.status,
+      detail: entry.status === "running" ? "等待继续" : entry.detail
+    }])) as Record<string, TeamCalculationProgressState>;
+    teamCalculationProgress.value = next;
+  }
+
   const copyAllowed = computed(() => {
     const required = [
       "snapshotValid",
@@ -549,6 +560,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       decisions: decisions.value,
       yuhunDecisions: yuhunDecisions.value,
       teamCalculations: teamCalculations.value,
+      teamCalculationProgress: teamCalculationProgress.value,
+      teamCalculationPaused: teamCalculationPaused.value || busy.value === "正在计算阵容御魂搭配" || busy.value === "计算已暂停",
+      teamCalculationOptions: lastTeamCalculationOptions,
       plan: plan.value,
       simulation: simulation.value,
       checklist: checklist.value,
@@ -558,20 +572,24 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     })) as WorkbenchSessionV1;
   }
 
-  async function persistSessionNow(): Promise<void> {
+  function persistSessionNow(): Promise<void> {
     const session = makeWorkbenchSession();
-    if (!session || !sessionReady || rawSnapshotBuffer === null) return;
+    if (!session || !sessionReady || rawSnapshotBuffer === null) return Promise.resolve();
     const snapshotToPersist = snapshotNeedsPersist ? rawSnapshotBuffer : undefined;
-    try {
-      await saveWorkbenchSession(session, snapshotToPersist);
-      if (rawSnapshotBuffer === snapshotToPersist) snapshotNeedsPersist = false;
-      persistenceWarningShown = false;
-    } catch (reason) {
-      if (!persistenceWarningShown) {
-        persistenceWarningShown = true;
-        notice.value = `本地自动保存失败：${reason instanceof Error ? reason.message : "浏览器未允许本地存储"}`;
+    const write = async (): Promise<void> => {
+      try {
+        await saveWorkbenchSession(session, snapshotToPersist);
+        if (rawSnapshotBuffer === snapshotToPersist) snapshotNeedsPersist = false;
+        persistenceWarningShown = false;
+      } catch (reason) {
+        if (!persistenceWarningShown) {
+          persistenceWarningShown = true;
+          notice.value = `本地自动保存失败：${reason instanceof Error ? reason.message : "浏览器未允许本地存储"}`;
+        }
       }
-    }
+    };
+    persistQueue = persistQueue.then(write, write);
+    return persistQueue;
   }
 
   function scheduleSessionPersist(): void {
@@ -584,7 +602,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   watch(
-    [snapshot, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, plan, simulation, checklist, actuals, gateState, targetViewState],
+    [snapshot, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
     scheduleSessionPersist,
     { deep: true }
   );
@@ -599,6 +617,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       snapshotNeedsPersist = true;
       snapshot.value = imported;
       teamCalculations.value = [];
+      teamCalculationProgress.value = {};
+      teamCalculationPaused.value = false;
+      lastTeamCalculationOptions = {};
+      resumingTeamCalculation = false;
       analysis.value = null;
       yuhunDecisions.value = null;
       yuhunDecisionFacets.value = null;
@@ -667,8 +689,15 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       // upgrades sessions saved before rows included displayed stat values.
       inventory.value = await client.queryInventory({ page: 1, pageSize: 25 });
       teamCalculations.value = stored.session.teamCalculations;
-      teamCalculationProgress.value = {};
+      teamCalculationProgress.value = stored.session.teamCalculationProgress === undefined
+        ? {}
+        : JSON.parse(JSON.stringify(stored.session.teamCalculationProgress)) as Record<string, TeamCalculationProgressState>;
+      markTeamCalculationPendingAfterPause();
       markTeamCalculationResultsCompleted(teamCalculations.value);
+      lastTeamCalculationOptions = stored.session.teamCalculationOptions === null || stored.session.teamCalculationOptions === undefined
+        ? {}
+        : JSON.parse(JSON.stringify(stored.session.teamCalculationOptions)) as TeamCalculationRunOptions;
+      teamCalculationPaused.value = stored.session.teamCalculationPaused === true || Object.values(teamCalculationProgress.value).some((entry) => entry.status === "pending");
       if (stored.session.analysis !== null) {
         analysis.value = await client.analyze({
           templateIds: templateIds.value,
@@ -868,6 +897,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       error.value = { stage: "snapshot", code: "SNAPSHOT_REQUIRED", path: null, message: "请先导入游戏快照" };
       return;
     }
+    const generation = teamCalculationGeneration;
     const resume = resumingTeamCalculation;
     resumingTeamCalculation = false;
     lastTeamCalculationOptions = options;
@@ -906,6 +936,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     teamCalculationPaused.value = false;
     begin("正在准备计算");
     await preparePerformanceBenchmark();
+    if (generation !== teamCalculationGeneration) return;
     begin("正在计算阵容御魂搭配");
     const startedAt = now();
     try {
@@ -921,13 +952,16 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         else reports[index] = report;
       };
       const onProgress = (value: WorkerProgress): void => {
+        if (generation !== teamCalculationGeneration) return;
         progress.value = value;
         updateTeamCalculationProgress(value);
       };
       const onReport = (report: TeamCalculationReportDTO): void => {
+        if (generation !== teamCalculationGeneration) return;
         upsertReport(report);
         teamCalculations.value = [...teamCalculations.value.filter((item) => item.id !== report.id), report];
         markTeamCalculationResultsCompleted([report]);
+        void persistSessionNow();
       };
       if (!smartMode) {
         const result = await client.calculateTeamTargets(requests, onProgress, onReport);
@@ -974,6 +1008,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           active.splice(0, active.length, ...next);
         }
       }
+      if (generation !== teamCalculationGeneration) return;
       teamCalculations.value = reports;
       markTeamCalculationResultsCompleted(teamCalculations.value);
       const performanceRecord = recordPerformance({
@@ -998,6 +1033,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       const approximate = entities.filter((entity) => entity.status === "success" && entity.exact === false).length;
       notice.value = `完成 ${success} 个式神目标${approximate > 0 ? `，其中 ${approximate} 个为近似最优` : ""}；已按阵容顺序分配御魂（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`;
     } catch (reason) {
+      if (generation !== teamCalculationGeneration) return;
       if (reason instanceof WorkflowClientPausedError) {
         teamCalculationPaused.value = true;
         busy.value = "计算已暂停";
@@ -1006,16 +1042,18 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       }
       fail(reason);
     } finally {
-      if (!teamCalculationPaused.value) busy.value = null;
+      if (generation === teamCalculationGeneration && !teamCalculationPaused.value) busy.value = null;
     }
   }
 
   function pauseTeamCalculation(): void {
     if (busy.value !== "正在计算阵容御魂搭配") return;
     client.pauseAndReset();
+    markTeamCalculationPendingAfterPause();
     teamCalculationPaused.value = true;
     busy.value = "计算已暂停";
     progress.value = null;
+    void persistSessionNow();
   }
 
   function resumeTeamCalculation(): void {
@@ -1023,6 +1061,25 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     teamCalculationPaused.value = false;
     resumingTeamCalculation = true;
     void calculateTeamTargets(lastTeamCalculationOptions);
+  }
+
+  function teamCalculationOptionsForResume(): TeamCalculationRunOptions {
+    return JSON.parse(JSON.stringify(lastTeamCalculationOptions)) as TeamCalculationRunOptions;
+  }
+
+  function resetTeamCalculations(): void {
+    teamCalculationGeneration += 1;
+    resumingTeamCalculation = false;
+    teamCalculationPaused.value = false;
+    lastTeamCalculationOptions = {};
+    client.resetTeamCalculations();
+    invalidateAnalysisResults();
+    progress.value = null;
+    if (busy.value === "正在准备计算" || busy.value === "正在计算阵容御魂搭配" || busy.value === "计算已暂停") {
+      busy.value = null;
+    }
+    notice.value = "已重置阵容计算结果；快照、目标与策略保持不变";
+    scheduleSessionPersist();
   }
 
   async function inspectTeamTarget(code: string): Promise<TeamCodeInspectionDTO | null> {
@@ -1589,8 +1646,24 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       } satisfies ImportedTeamTarget];
     });
     if (targets.length === 0) return;
-    teamTargets.value = targets;
-    invalidateAnalysisResults();
+    const existing = teamTargets.value;
+    if (existing.length === 0) {
+      teamTargets.value = targets;
+      return;
+    }
+    const existingById = new Map(existing.map((target) => [target.id, target]));
+    const existingByCode = new Map(existing.flatMap((target) => target.code === undefined ? [] : [[target.code, target] as const]));
+    const merged = targets.map((published) => {
+      const previous = existingById.get(published.id) ?? (published.code === undefined ? undefined : existingByCode.get(published.code));
+      return previous === undefined ? published : {
+        ...published,
+        id: previous.id,
+        enabled: previous.enabled,
+        inspection: previous.inspection ?? published.inspection
+      };
+    });
+    const publishedIds = new Set(merged.map((target) => target.id));
+    teamTargets.value = [...merged, ...existing.filter((target) => !publishedIds.has(target.id))];
   }
 
   function exportHandoff(): void {
@@ -1700,7 +1773,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
     performanceHistory,
     importSnapshot, loadInventory, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
-    restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
+    restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
     invalidatePolicy, confirmPolicy,

@@ -286,6 +286,22 @@ export class WorkflowClient {
     }
   }
 
+  /** Stop active calculation workers, clear their state, and retain the snapshot. */
+  resetTeamCalculations(): void {
+    this.pauseRequested = false;
+    for (const client of this.parallelClients) client.dispose();
+    this.parallelClients.clear();
+    this.worker.terminate();
+    const error = new Error("计算已重置");
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+    this.worker = this.createWorker();
+    if (this.snapshotBuffer !== null) {
+      const snapshotCopy = this.snapshotBuffer.slice(0);
+      this.snapshotRestore = this.call("importSnapshot", [snapshotCopy], [snapshotCopy]);
+    }
+  }
+
   /** Stop an auxiliary worker without creating another one. */
   private dispose(): void {
     this.worker.terminate();

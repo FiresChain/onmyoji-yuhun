@@ -22,6 +22,7 @@ import {
   Pencil,
   Pause,
   Play,
+  RotateCcw,
   Search,
   Save,
   ScanQrCode,
@@ -570,6 +571,21 @@ async function initializeCatalogAfterRestore(): Promise<void> {
   if (import.meta.env.MODE !== "test") {
     store.loadPublishedTeamTargets(publishedTargets);
   }
+  const restoredOptions = store.teamCalculationOptionsForResume();
+  if (restoredOptions.mode === "smart" || restoredOptions.mode === "manual") {
+    teamSelectionMode.value = restoredOptions.mode;
+  }
+  if (restoredOptions.difficultyDecreaseCount !== undefined) {
+    smartDifficultyDecreaseCount.value = restoredOptions.difficultyDecreaseCount;
+  }
+  if (restoredOptions.sceneIds !== undefined && restoredOptions.sceneIds.length > 0) {
+    const available = new Set(scenePaths.value.map((scene) => scene.sceneId));
+    const restoredSceneIds = [...new Set(restoredOptions.sceneIds.map(canonicalSceneId))].filter((id) => available.has(id));
+    if (restoredSceneIds.length > 0) {
+      selectedSceneIds.value = restoredSceneIds;
+      focusedSceneId.value = restoredSceneIds[0] ?? focusedSceneId.value;
+    }
+  }
   viewStateReady = true;
   store.setTargetViewState(localCatalogOverlay(catalog.value), selectedSceneIds.value, focusedSceneId.value, catalog.value);
   void hydrateTeamTargetInspections();
@@ -674,8 +690,9 @@ function smartVisibleEnabled(target: ImportedTeamTarget): boolean {
   const ordinary = targetsForScene(target.sceneId).filter((item) => item.forceCalculate !== true);
   const index = ordinary.findIndex((item) => item.id === target.id);
   if (smartDifficultyDecreaseCount.value === "auto") {
-    const status = teamCalculationStatus(target);
-    return index === 0 && (status === "pending" || status === "running");
+    // A smart run can advance beyond the highest-difficulty lineup. Keep every
+    // lineup already reached by this run visibly selected after restoration.
+    return store.teamCalculationProgressFor(target.id) !== null || index === 0;
   }
   return index >= 0 && index < Number(smartDifficultyDecreaseCount.value);
 }
@@ -1848,11 +1865,12 @@ function ruleSummary(rule: PresetRule): string {
         <div class="team-calculation-progress-bar" role="progressbar" :aria-valuenow="teamProgressPercent" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${teamProgressPercent}%` }"></i></div>
         <span class="team-calculation-progress-percent">{{ teamProgressPercent }}%</span>
       </div>
-      <div v-else class="team-library-progress team-library-progress-idle"><span>计算进度</span><small>{{ hasTeamCalculationRun ? '本次计算已完成' : '尚未启动' }}</small></div>
+      <div v-else class="team-library-progress team-library-progress-idle"><span>计算进度</span><small>{{ store.teamCalculationPaused ? '已暂停，结果已保存' : (hasTeamCalculationRun ? '本次计算已完成' : '尚未启动') }}</small></div>
       <div class="team-calculation-toolbar-actions">
         <button v-if="store.busy === '正在计算阵容御魂搭配'" class="secondary" data-testid="pause-team-targets" @click="store.pauseTeamCalculation"><Pause :size="15" />暂停计算</button>
         <button v-else-if="store.teamCalculationPaused" class="primary" data-testid="resume-team-targets" :disabled="!store.snapshot" @click="store.resumeTeamCalculation"><Play :size="15" />继续计算</button>
         <button v-else class="primary" data-testid="calculate-team-targets" :disabled="!!store.busy || (teamSelectionMode !== 'smart' && selectedEnabledTeamTargetCount === 0) || (teamSelectionMode === 'smart' && store.teamTargets.length === 0) || !store.snapshot" @click="calculateVisibleTeamTargets"><Calculator :size="16" />计算已启动阵容</button>
+        <button class="secondary" data-testid="reset-team-targets" :disabled="store.teamCalculations.length === 0 && Object.keys(store.teamCalculationProgress).length === 0 && !store.teamCalculationPaused" @click="store.resetTeamCalculations"><RotateCcw :size="15" />重置计算</button>
       </div>
     </div>
 

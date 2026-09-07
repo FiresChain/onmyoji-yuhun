@@ -113,6 +113,23 @@ export interface WorkbenchSessionV1 {
   readonly decisions: PageDTO<SpeedCategoryDecision> | null;
   readonly yuhunDecisions?: PageDTO<YuhunDecisionRowDTO> | null;
   readonly teamCalculations: readonly TeamCalculationReportDTO[];
+  /** Calculation progress is persisted so a paused run survives reloads. */
+  readonly teamCalculationProgress?: Readonly<Record<string, {
+    readonly targetId: string;
+    readonly targetLabel: string;
+    readonly status: "pending" | "running" | "completed" | "error";
+    readonly completed: number;
+    readonly total: number;
+    readonly current: string | null;
+    readonly currentShikigamiId?: number | null;
+    readonly detail: string | null;
+  }>>;
+  readonly teamCalculationPaused?: boolean;
+  readonly teamCalculationOptions?: {
+    readonly mode?: "manual" | "smart";
+    readonly sceneIds?: readonly string[];
+    readonly difficultyDecreaseCount?: "auto" | number;
+  } | null;
   readonly plan: PlanSummaryDTO | null;
   readonly simulation: SimulationSummaryDTO | null;
   readonly checklist: ImportChecklistDTO | null;

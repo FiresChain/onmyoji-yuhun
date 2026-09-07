@@ -79,8 +79,13 @@ This is the main configuration surface.
 - **Manual selection** calculates enabled targets. **Smart selection** starts
   forced targets first, otherwise tries targets from highest difficulty and can
   step down through the selected number of difficulties (or automatically
-  until exhausted). A calculation can be paused and resumed; the UI shows
-  overall and per-target progress.
+  until exhausted). A calculation can be paused and resumed; completed reports,
+  per-target progress, and the original manual/smart options are retained in
+  the private browser session. After a refresh or browser restart, an
+  interrupted run restores as paused and continues only uncompleted targets.
+  The toolbar reset stops the active calculation and clears calculation-derived
+  results without changing the snapshot, targets, or strategies. Loading
+  published targets must merge with this local state rather than invalidate it.
 - Expanded calculation results show each configured shikigami's selected suit,
   score, target-score pass/fail state, panel attributes, pieces, and failure
   reason. Calculation errors can be copied.
