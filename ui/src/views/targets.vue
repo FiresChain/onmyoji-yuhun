@@ -282,17 +282,13 @@ const subStatCountOptions: ReadonlyArray<{ id: SubStatCount; label: string }> = 
   { id: "3", label: "3条" },
   { id: "4", label: "4条" }
 ];
-const RULE_YUHUN_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  涅槃之火: "涅槃火"
-};
 const ruleYuhunOptions = YUHUN_TYPES.map((name) => {
-  const displayName = RULE_YUHUN_DISPLAY_NAMES[name] ?? name;
   return {
     name,
     label: name,
-    category: yuhunCategory(displayName),
-    image: yuhunImage(displayName),
-    placeholder: yuhunPlaceholder(displayName)
+    category: yuhunCategory(name),
+    image: yuhunImage(name),
+    placeholder: yuhunPlaceholder(name)
   };
 });
 const ruleYuhunByName = new Map<string, (typeof ruleYuhunOptions)[number]>(ruleYuhunOptions.map((item) => [item.name, item]));

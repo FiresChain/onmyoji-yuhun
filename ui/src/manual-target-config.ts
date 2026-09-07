@@ -1,3 +1,5 @@
+import { canonicalYuhunName } from "../../src/browser.js";
+
 const ASSET_BASE_URL = (import.meta.env.VITE_ASSET_BASE_URL ?? "https://onmyoji-assets.fireschain.org").replace(/\/$/, "");
 const CATALOG_URL = `${ASSET_BASE_URL}/assets/catalog.json`;
 
@@ -141,20 +143,29 @@ const TWO_PIECE_EFFECT_OPTIONS: readonly YuhunOption[] = TWO_PIECE_EFFECTS.map((
 export const YUHUN_OPTIONS: YuhunOption[] = [];
 
 const YUHUN_BY_NAME = new Map<string, YuhunOption>();
+
+function yuhunOptionForName(name: string): YuhunOption | undefined {
+  return YUHUN_BY_NAME.get(name) ?? YUHUN_BY_NAME.get(canonicalYuhunName(name));
+}
+
 for (const item of YUHUN_OPTIONS) {
   if (!YUHUN_BY_NAME.has(item.name)) YUHUN_BY_NAME.set(item.name, item);
 }
 
 export function yuhunCategory(name: string): YuhunCategory {
-  return YUHUN_BY_NAME.get(name)?.category ?? "其他";
+  return yuhunOptionForName(name)?.category ?? "其他";
 }
 
 export function yuhunImage(name: string): string | null {
-  return YUHUN_BY_NAME.get(name)?.avatar || null;
+  return yuhunOptionForName(name)?.avatar || null;
+}
+
+export function yuhunDisplayName(name: string): string {
+  return yuhunOptionForName(name)?.name ?? canonicalYuhunName(name);
 }
 
 export function isTwoPieceEffectOption(name: string): boolean {
-  return YUHUN_BY_NAME.get(name)?.twoPieceEffect === true;
+  return yuhunOptionForName(name)?.twoPieceEffect === true;
 }
 
 export function yuhunPlaceholder(name: string): string {

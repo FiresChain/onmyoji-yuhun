@@ -1,5 +1,5 @@
 import { calculatePanel, parseCbgYuhun, type CbgYuhunItem, type Panel, type Yuhun } from "./calculation.js";
-import { YUHUN_SUIT_IDS_BY_NAME } from "./mappings.js";
+import { canonicalYuhunName, YUHUN_SUIT_IDS_BY_NAME } from "./mappings.js";
 import type { IntrinsicStatId, StatId } from "./types.js";
 
 export interface YyxYuhun extends Yuhun {
@@ -184,8 +184,9 @@ function parseOnmyojiHubSnapshot(root: UnknownRecord): ParsedGameSnapshot {
   const parsedItems = Object.entries(inventory).map(([inventoryId, rawValue], index): YyxYuhun => {
     const raw = requireRecord(rawValue, `equip_desc.inventory.${inventoryId}`) as unknown as CbgYuhunItem;
     const parsed = parseCbgYuhun(raw);
-    const suitId = optionalInteger((raw as unknown as UnknownRecord).suitid, YUHUN_SUIT_IDS_BY_NAME[parsed.name as keyof typeof YUHUN_SUIT_IDS_BY_NAME]);
-    const normalizedName = SUIT_NAMES_BY_ID.get(suitId) ?? parsed.name;
+    const parsedName = canonicalYuhunName(parsed.name);
+    const suitId = optionalInteger((raw as unknown as UnknownRecord).suitid, YUHUN_SUIT_IDS_BY_NAME[parsedName as keyof typeof YUHUN_SUIT_IDS_BY_NAME]);
+    const normalizedName = canonicalYuhunName(SUIT_NAMES_BY_ID.get(suitId) ?? parsedName);
     return {
       ...parsed,
       id: parsed.id || `inventory-${index + 1}`,

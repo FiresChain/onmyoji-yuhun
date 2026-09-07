@@ -7,7 +7,7 @@ export const YUHUN_TYPES = [
   "雪幽魂",
   "地藏像",
   "蝠翼",
-  "涅槃之火",
+  "涅槃火",
   "三味",
   "魍魉之匣",
   "被服",
@@ -78,11 +78,16 @@ export const YUHUN_TYPES = [
 
 export type YuhunType = (typeof YUHUN_TYPES)[number];
 
+/** Canonicalize legacy names emitted by older snapshot/catalog versions. */
+export function canonicalYuhunName(name: string): string {
+  return name === "涅槃之火" ? "涅槃火" : name;
+}
+
 export const YUHUN_SUIT_IDS_BY_NAME = {
   雪幽魂: 300002,
   地藏像: 300003,
   蝠翼: 300004,
-  涅槃之火: 300006,
+  涅槃火: 300006,
   三味: 300007,
   魍魉之匣: 300008,
   被服: 300009,
@@ -185,7 +190,7 @@ export const TWO_PIECE_EFFECTS = [
     name: "生命加成",
     teamCodeId: 6,
     stat: "hpPercent",
-    suitNames: ["叠叩", "恶楼", "涂佛", "树妖", "薙魂", "钟灵", "镜姬", "被服", "涅槃之火", "地藏像", "夜啼石"]
+    suitNames: ["叠叩", "恶楼", "涂佛", "树妖", "薙魂", "钟灵", "镜姬", "被服", "涅槃火", "地藏像", "夜啼石"]
   },
   {
     id: "two-piece-effect:defensePercent",

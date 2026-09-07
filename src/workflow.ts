@@ -95,10 +95,19 @@ export interface InventoryRowDTO {
   readonly star: number;
   readonly level: number;
   readonly mainStat: StatId;
+  readonly mainValue: number;
+  /** Boss yuhun's per-piece intrinsic property, displayed with the main stat. */
+  readonly intrinsicStats: readonly InventoryStatDTO[];
   readonly subStats: readonly StatId[];
+  readonly subStatValues: readonly InventoryStatDTO[];
   readonly initialSubStatCount: number | null;
   readonly locked: boolean;
   readonly garbage: boolean;
+}
+
+export interface InventoryStatDTO {
+  readonly stat: StatId;
+  readonly value: number;
 }
 
 export interface PageDTO<T> {
@@ -611,6 +620,9 @@ export class YuhunWorkflow {
       (query.garbage === undefined || item.garbage === query.garbage) &&
       (search === "" || item.name.toLocaleLowerCase().includes(search))
     );
+    const statEntries = (stats: Partial<Record<StatId, number>>): InventoryStatDTO[] => (
+      Object.entries(stats).map(([stat, value]) => ({ stat: stat as StatId, value }))
+    );
     const rows = filtered.slice(start, start + pageSize).map((item) => ({
       row: this.items!.indexOf(item) + 1,
       suit: item.name,
@@ -618,7 +630,10 @@ export class YuhunWorkflow {
       star: item.star,
       level: item.level,
       mainStat: item.mainStat,
+      mainValue: item.mainValue,
+      intrinsicStats: statEntries(item.intrinsicStats),
       subStats: Object.keys(item.subStats) as StatId[],
+      subStatValues: statEntries(item.subStats),
       initialSubStatCount: item.initialSubStats === null ? null : Object.keys(item.initialSubStats).length,
       locked: item.lock,
       garbage: item.garbage

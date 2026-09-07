@@ -12,6 +12,7 @@ import {
 import {
   STAT_LABELS,
   SUB_STAT_MAX_ROLLS,
+  canonicalYuhunName,
   findTwoPieceEffectByName
 } from "./mappings.js";
 import type { IntrinsicStatId, StatId } from "./types.js";
@@ -234,11 +235,6 @@ const SIX_STAR_MAIN_STAT_MAX: Readonly<Record<number, Partial<Record<StatId, num
   6: { attackPercent: 0.55, hpPercent: 0.55, defensePercent: 0.55, crit: 0.55, critDamage: 0.89 }
 };
 
-function normalizeSuitName(name: string): string {
-  if (name === "涅槃火") return "涅槃之火";
-  return name;
-}
-
 function metricName(id: number | null): string {
   return id !== null && id in TEAM_METRIC_NAMES
     ? TEAM_METRIC_NAMES[id as TeamMetricId]
@@ -302,7 +298,7 @@ function targetFromManual(input: ManualShikigamiCalculationInput): CalculationTa
     includedSetGroups: manualSuitRequirements(input).map(({ name, count }) => {
       const broadEffect = findTwoPieceEffectByName(name);
       return broadEffect === undefined
-        ? { names: [normalizeSuitName(name)], count }
+        ? { names: [canonicalYuhunName(name)], count }
         : broadTwoPieceEffectGroup(broadEffect.suitNames, broadEffect.stat, count);
     }),
     excludedSuitNames: new Set(),

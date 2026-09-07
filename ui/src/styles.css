@@ -163,6 +163,16 @@ textarea { width: 100%; padding: 9px 10px; font-family: ui-monospace, SFMono-Reg
 input:focus, select:focus, textarea:focus { border-color: #688f8c; box-shadow: 0 0 0 2px #dce9e7; }
 .table-wrap { width: 100%; overflow: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.inventory-table { min-width: 880px; }
+.inventory-table td { vertical-align: top; }
+.inventory-suit { display: inline-flex; align-items: center; gap: 7px; min-width: 112px; }
+.inventory-suit img { width: 28px; height: 28px; flex: 0 0 28px; object-fit: contain; }
+.inventory-suit > svg { flex: 0 0 28px; padding: 5px; color: var(--muted); background: #f0f2f2; border: 1px solid var(--line); border-radius: 3px; }
+.inventory-stat-list { display: grid; gap: 4px; width: max-content; }
+.inventory-stat { display: grid; grid-template-columns: 64px max-content; align-items: baseline; gap: 8px; line-height: 1.2; }
+.inventory-stat small { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.inventory-stat strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.inventory-stat.intrinsic { padding-top: 4px; border-top: 1px dashed var(--line); }
 th { padding: 9px 11px; color: #687176; background: #f2f4f4; border-bottom: 1px solid #d7dbdd; text-align: left; font-weight: 700; white-space: nowrap; }
 td { max-width: 300px; padding: 8px 11px; border-bottom: 1px solid #eceeef; white-space: nowrap; }
 td svg { display: inline-block; margin-right: 3px; vertical-align: -2px; color: #7d878b; }

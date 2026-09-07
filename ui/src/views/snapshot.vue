@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { FileJson, Filter, Upload } from "@lucide/vue";
+import { STAT_LABELS, type InventoryStatDTO, type StatId } from "../../../src/browser.js";
 import EChart from "../components/EChart.vue";
+import { yuhunDisplayName, yuhunImage } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
 
 const store = useWorkbenchStore();
@@ -27,6 +29,22 @@ async function applyFilters(page = 1): Promise<void> {
     ...(search.value === "" ? {} : { search: search.value }),
     ...(level.value === "" ? {} : { level: Number(level.value) })
   });
+}
+
+const percentageStats = new Set<StatId>([
+  "attackPercent",
+  "defensePercent",
+  "hpPercent",
+  "crit",
+  "critDamage",
+  "effectHit",
+  "effectResist"
+]);
+
+function formatStatValue({ stat, value }: InventoryStatDTO): string {
+  const displayed = percentageStats.has(stat) ? value * 100 : value;
+  const rounded = displayed.toFixed(2).replace(/\.?0+$/, "");
+  return `${displayed >= 0 ? "+" : ""}${rounded}${percentageStats.has(stat) ? "%" : ""}`;
 }
 </script>
 
@@ -66,8 +84,8 @@ async function applyFilters(page = 1): Promise<void> {
       <div class="section-toolbar"><div><h2>库存明细</h2><span>{{ store.inventory?.total ?? 0 }} 条 · 御魂 ID 默认隐藏</span></div>
         <div class="filters"><Filter :size="16" /><input v-model="search" placeholder="套装名称" @keyup.enter="applyFilters()" /><select v-model="level" @change="applyFilters()"><option value="">全部等级</option><option v-for="n in [0,3,6,9,12,15]" :key="n" :value="n">+{{ n }}</option></select></div>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>#</th><th>套装</th><th>位置</th><th>星级</th><th>等级</th><th>主属性</th><th>副属性</th><th>状态</th></tr></thead><tbody>
-        <tr v-for="row in store.inventory?.rows" :key="row.row"><td>{{ row.row }}</td><td><FileJson :size="14" /> {{ row.suit }}</td><td>{{ row.position }}</td><td>{{ row.star }}★</td><td>+{{ row.level }}</td><td>{{ row.mainStat }}</td><td>{{ row.subStats.join(' / ') }}</td><td><span v-if="row.locked" class="tag neutral">锁定</span><span v-if="row.garbage" class="tag danger-tag">弃置池</span></td></tr>
+      <div class="table-wrap"><table class="inventory-table"><thead><tr><th>#</th><th>套装</th><th>位置</th><th>星级</th><th>等级</th><th>主属性</th><th>副属性</th><th>状态</th></tr></thead><tbody>
+        <tr v-for="row in store.inventory?.rows" :key="row.row"><td>{{ row.row }}</td><td><span class="inventory-suit"><img v-if="yuhunImage(row.suit)" :src="yuhunImage(row.suit)!" :alt="yuhunDisplayName(row.suit)" /><FileJson v-else :size="18" /><span>{{ yuhunDisplayName(row.suit) }}</span></span></td><td>{{ row.position }}</td><td>{{ row.star }}★</td><td>+{{ row.level }}</td><td><div class="inventory-stat-list"><span class="inventory-stat"><small>{{ STAT_LABELS[row.mainStat] }}</small><strong>{{ formatStatValue({ stat: row.mainStat, value: row.mainValue }) }}</strong></span><span v-for="stat in row.intrinsicStats" :key="stat.stat" class="inventory-stat intrinsic"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ formatStatValue(stat) }}</strong></span></div></td><td><div class="inventory-stat-list"><span v-for="stat in row.subStatValues" :key="stat.stat" class="inventory-stat"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ formatStatValue(stat) }}</strong></span></div></td><td><span v-if="row.locked" class="tag neutral">锁定</span><span v-if="row.garbage" class="tag danger-tag">弃置池</span></td></tr>
       </tbody></table></div>
       <div class="pagination"><button :disabled="(store.inventory?.page ?? 1) <= 1" @click="applyFilters((store.inventory?.page ?? 1)-1)">上一页</button><span>{{ store.inventory?.page ?? 1 }} / {{ Math.max(1, Math.ceil((store.inventory?.total ?? 0)/25)) }}</span><button :disabled="(store.inventory?.page ?? 1)*25 >= (store.inventory?.total ?? 0)" @click="applyFilters((store.inventory?.page ?? 1)+1)">下一页</button></div>
     </section>

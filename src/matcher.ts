@@ -7,6 +7,7 @@ import type {
   YuhunFilterShare
 } from "./types.js";
 import type { YyxYuhun } from "./yyx.js";
+import { canonicalYuhunName } from "./mappings.js";
 
 export type FilterMatcherErrorCode =
   | "EMPTY_CRITERIA"
@@ -113,7 +114,7 @@ function compileCriteria(
   }
 
   return (item) => {
-    if (criteria.types.length > 0 && !criteria.types.includes(item.name)) return false;
+    if (criteria.types.length > 0 && !criteria.types.some((name) => canonicalYuhunName(name) === canonicalYuhunName(item.name))) return false;
     if (criteria.positions.length > 0 && !criteria.positions.includes(item.position)) return false;
     if (criteria.stars.length > 0 && !criteria.stars.includes(item.star)) return false;
     if (criteria.mainStats.length > 0 && !criteria.mainStats.includes(item.mainStat)) return false;

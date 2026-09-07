@@ -20,6 +20,7 @@ export {
   TWO_PIECE_EFFECTS,
   YUHUN_POSITIONS,
   YUHUN_TYPES,
+  canonicalYuhunName,
   findTwoPieceEffectByName,
   findTwoPieceEffectByTeamCodeId,
   findTwoPieceEffectBySuitNames
@@ -241,6 +242,7 @@ export type {
   ImportChecklistDTO,
   InventoryQuery,
   InventoryCapacityDTO,
+  InventoryStatDTO,
   InventoryRowDTO,
   PageDTO,
   PlanSummaryDTO,

@@ -24,7 +24,8 @@ import {
   SUB_STATS,
   SUB_STAT_COUNTS,
   YUHUN_SUIT_IDS_BY_NAME,
-  YUHUN_TYPES
+  YUHUN_TYPES,
+  canonicalYuhunName
 } from "./mappings.js";
 import type {
   FilterCriteria,
@@ -1097,7 +1098,7 @@ export function buildDualFilterDrafts(input: BuildDualFilterDraftsInput): DualFi
 function canonicalCriteria(criteria: FilterCriteriaDraft | undefined): FilterCriteria {
   const input = criteria ?? {};
   return {
-    types: YUHUN_TYPES.filter((type) => new Set(input.types ?? []).has(type)),
+    types: YUHUN_TYPES.filter((type) => (input.types ?? []).some((value) => canonicalYuhunName(value) === type)),
     positions: [...new Set(input.positions ?? [])].sort((left, right) => left - right),
     stars: [...new Set(input.stars ?? [])].sort((left, right) => left - right),
     mainStats: sortByOrder(input.mainStats ?? [], MAIN_STAT_ORDER),

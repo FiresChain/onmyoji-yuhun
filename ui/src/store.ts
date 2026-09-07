@@ -663,7 +663,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         };
       });
       nextPresetRuleId = Math.max(1, ...presetRules.value.map((rule) => Number(rule.id.match(/preset-(?:discard|enhance)-(\d+)$/)?.[1] ?? 0) + 1));
-      inventory.value = stored.session.inventory ?? await client.queryInventory({ page: 1, pageSize: 25 });
+      // Inventory rows are derived from the restored snapshot. Re-querying also
+      // upgrades sessions saved before rows included displayed stat values.
+      inventory.value = await client.queryInventory({ page: 1, pageSize: 25 });
       teamCalculations.value = stored.session.teamCalculations;
       teamCalculationProgress.value = {};
       markTeamCalculationResultsCompleted(teamCalculations.value);
