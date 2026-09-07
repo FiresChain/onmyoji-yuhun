@@ -45,6 +45,11 @@ export interface PerformanceCpuBenchmark {
   readonly checksum: number;
 }
 
+/** Measured aggregate CPU throughput for one specific number of Workers. */
+export interface PerformanceCpuParallelSample extends PerformanceCpuBenchmark {
+  readonly workerCount: number;
+}
+
 export interface PerformanceMemoryBenchmark {
   readonly id: "memory-f64-stream-v1";
   readonly durationMs: number;
@@ -54,7 +59,7 @@ export interface PerformanceMemoryBenchmark {
 }
 
 export interface PerformanceBenchmark {
-  readonly id: "onmyoji-hardware-profile-v1";
+  readonly id: "onmyoji-hardware-profile-v1" | "onmyoji-hardware-profile-v2";
   readonly measuredAt: string;
   readonly environmentKey: string;
   readonly totalDurationMs: number;
@@ -62,8 +67,33 @@ export interface PerformanceBenchmark {
   readonly cpuMulti: PerformanceCpuBenchmark;
   readonly cpuMultiWorkerCount: number;
   readonly cpuParallelSpeedup: number;
+  /** v2 measures each lane count, so scheduling can use actual browser throughput. */
+  readonly cpuParallelSamples: readonly PerformanceCpuParallelSample[];
   readonly memory: PerformanceMemoryBenchmark;
   readonly gpu: PerformanceGpuBenchmark;
+}
+
+export type CalculationResourceProfile = "light" | "balanced" | "performance";
+
+export interface CalculationResourceProfileDefinition {
+  readonly id: CalculationResourceProfile;
+  readonly label: string;
+  readonly targetCapacityRatio: number;
+}
+
+export const CALCULATION_RESOURCE_PROFILES: readonly CalculationResourceProfileDefinition[] = [
+  { id: "light", label: "轻量 30%", targetCapacityRatio: 0.3 },
+  { id: "balanced", label: "平衡 50%", targetCapacityRatio: 0.5 },
+  { id: "performance", label: "性能 70%", targetCapacityRatio: 0.7 }
+];
+
+export interface PerformanceResourceAllocation {
+  readonly profile: CalculationResourceProfile;
+  readonly targetCapacityRatio: number;
+  readonly source: "benchmark" | "logical-core-estimate";
+  readonly benchmarkPeakEvaluationsPerSecond: number | null;
+  readonly targetEvaluationsPerSecond: number | null;
+  readonly estimatedCapacityRatio: number | null;
 }
 
 export interface PerformanceGpuBenchmark {
@@ -83,13 +113,15 @@ export interface PerformanceGpuBenchmark {
 }
 
 export interface PerformanceSchedulerInfo {
-  readonly id: "workflow-worker-lanes-v1";
+  readonly id: "workflow-worker-lanes-v1" | "workflow-worker-lanes-v2";
   readonly mode: "single-worker" | "parallel-workloads";
   readonly workerCount: number;
+  /** Null for operations that do not schedule independent team workloads. */
+  readonly resourceAllocation: PerformanceResourceAllocation | null;
 }
 
 export interface PerformanceRecord {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 4;
   readonly kind: "onmyoji-yuhun-performance";
   readonly id: string;
   readonly recordedAt: string;
@@ -136,8 +168,9 @@ export interface PerformanceRecord {
 }
 
 const STORAGE_KEY = "onmyoji-yuhun-performance-history-v1";
-const BENCHMARK_STORAGE_KEY = "onmyoji-yuhun-performance-benchmark-v2";
+const BENCHMARK_STORAGE_KEY = "onmyoji-yuhun-performance-benchmark-v3";
 const GPU_STORAGE_KEY = "onmyoji-yuhun-performance-gpu-v1";
+const RESOURCE_PROFILE_STORAGE_KEY = "onmyoji-yuhun-calculation-resource-profile-v1";
 const MAX_RECORDS = 50;
 const BENCHMARK_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
@@ -185,17 +218,16 @@ export function loadPerformanceHistory(): PerformanceRecord[] {
 
 function normalizeRecord(value: unknown): PerformanceRecord[] {
   if (!isRecord(value) || value.kind !== "onmyoji-yuhun-performance") return [];
-  if (value.schemaVersion === 3) {
+  if (value.schemaVersion === 4 || value.schemaVersion === 3) {
     const workerCount = isRecord(value.algorithm) && typeof value.algorithm.workerCount === "number"
       ? value.algorithm.workerCount
       : 1;
     return [{
       ...(value as unknown as PerformanceRecord),
+      schemaVersion: 4,
       device: normalizeDevice(value.device),
       benchmark: normalizePerformanceBenchmark(value.benchmark),
-      scheduler: isRecord(value.scheduler)
-        ? value.scheduler as unknown as PerformanceSchedulerInfo
-        : schedulerInfo(workerCount)
+      scheduler: normalizeScheduler(value.scheduler, workerCount)
     }];
   }
   if (value.schemaVersion === 2) {
@@ -205,10 +237,10 @@ function normalizeRecord(value: unknown): PerformanceRecord[] {
       : 1;
     return [{
       ...legacy,
-      schemaVersion: 3,
+      schemaVersion: 4,
       device: normalizeDevice(value.device),
       benchmark: null,
-      scheduler: schedulerInfo(workerCount)
+      scheduler: normalizeScheduler(value.scheduler, workerCount)
     }];
   }
   // Migrate the initial local-only schema so users do not lose history after an update.
@@ -220,7 +252,7 @@ function normalizeRecord(value: unknown): PerformanceRecord[] {
   const targetElapsedMs = targets.reduce((sum, target) => sum + (typeof target.elapsedMs === "number" ? target.elapsedMs : 0), 0);
   return [{
     ...(value as unknown as Omit<PerformanceRecord, "schemaVersion" | "algorithm" | "app" | "evaluatedPerSecond" | "endToEndEvaluatedPerSecond" | "pruningRate" | "searchElapsedMs" | "targetElapsedMs" | "criticalPathMs" | "overheadMs" | "targets" | "noMatchCount" | "unsupportedCount" | "disabledCount" | "exactCount" | "workloadKey" | "metricDistribution" | "benchmark" | "scheduler">),
-    schemaVersion: 3,
+    schemaVersion: 4,
     device: normalizeDevice(value.device),
     targets,
     algorithm: { id: "legacy-v1", runtime: "typescript", parameters: {}, workerCount: 1 },
@@ -260,7 +292,7 @@ export function clearPerformanceHistory(): void {
 
 function normalizePerformanceBenchmark(value: unknown): PerformanceBenchmark | null {
   if (!isRecord(value)
-    || value.id !== "onmyoji-hardware-profile-v1"
+    || (value.id !== "onmyoji-hardware-profile-v1" && value.id !== "onmyoji-hardware-profile-v2")
     || typeof value.measuredAt !== "string"
     || typeof value.environmentKey !== "string"
     || typeof value.totalDurationMs !== "number"
@@ -270,7 +302,27 @@ function normalizePerformanceBenchmark(value: unknown): PerformanceBenchmark | n
     || normalizeGpuBenchmark(value.gpu) === null
     || typeof value.cpuMultiWorkerCount !== "number"
     || typeof value.cpuParallelSpeedup !== "number") return null;
-  return value as unknown as PerformanceBenchmark;
+  const cpuParallelSamples = Array.isArray(value.cpuParallelSamples)
+    ? value.cpuParallelSamples.flatMap((sample) => normalizeCpuParallelSample(sample))
+    : [];
+  if (value.id === "onmyoji-hardware-profile-v2" && cpuParallelSamples.length === 0) return null;
+  return {
+    ...(value as unknown as Omit<PerformanceBenchmark, "cpuParallelSamples">),
+    cpuParallelSamples
+  };
+}
+
+function normalizeCpuParallelSample(value: unknown): PerformanceCpuParallelSample[] {
+  if (!isRecord(value)
+    || value.id !== "cpu-yuhun-search-js-v1"
+    || typeof value.workerCount !== "number"
+    || !Number.isSafeInteger(value.workerCount)
+    || value.workerCount < 1
+    || typeof value.durationMs !== "number"
+    || typeof value.evaluatedCombinations !== "number"
+    || typeof value.evaluationsPerSecond !== "number"
+    || typeof value.checksum !== "number") return [];
+  return [value as unknown as PerformanceCpuParallelSample];
 }
 
 function normalizeGpuBenchmark(value: unknown): PerformanceGpuBenchmark | null {
@@ -295,7 +347,12 @@ export function loadPerformanceBenchmark(): PerformanceBenchmark | null {
   if (value === null || typeof navigator === "undefined") return value;
   const measuredAt = Date.parse(value.measuredAt);
   const fresh = Number.isFinite(measuredAt) && Date.now() - measuredAt >= 0 && Date.now() - measuredAt < BENCHMARK_MAX_AGE_MS;
-  return fresh && value.environmentKey === performanceEnvironmentKey(capturePerformanceDevice()) ? value : null;
+  return fresh
+    && value.id === "onmyoji-hardware-profile-v2"
+    && value.cpuParallelSamples.length > 0
+    && value.environmentKey === performanceEnvironmentKey(capturePerformanceDevice())
+    ? value
+    : null;
 }
 
 export function savePerformanceBenchmark(value: PerformanceBenchmark): void {
@@ -330,12 +387,114 @@ export function savePerformanceGpu(value: PerformanceGpuInfo | null): void {
   } catch { /* local capability data is best effort */ }
 }
 
-export function schedulerInfo(workerCount: number): PerformanceSchedulerInfo {
+function normalizeResourceAllocation(value: unknown): PerformanceResourceAllocation | null {
+  if (!isRecord(value)
+    || !isCalculationResourceProfile(value.profile)
+    || typeof value.targetCapacityRatio !== "number"
+    || (value.source !== "benchmark" && value.source !== "logical-core-estimate")) return null;
+  return {
+    profile: value.profile,
+    targetCapacityRatio: value.targetCapacityRatio,
+    source: value.source,
+    benchmarkPeakEvaluationsPerSecond: typeof value.benchmarkPeakEvaluationsPerSecond === "number" ? value.benchmarkPeakEvaluationsPerSecond : null,
+    targetEvaluationsPerSecond: typeof value.targetEvaluationsPerSecond === "number" ? value.targetEvaluationsPerSecond : null,
+    estimatedCapacityRatio: typeof value.estimatedCapacityRatio === "number" ? value.estimatedCapacityRatio : null
+  };
+}
+
+function normalizeScheduler(value: unknown, fallbackWorkerCount: number): PerformanceSchedulerInfo {
+  if (!isRecord(value)) return schedulerInfo(fallbackWorkerCount);
+  const workerCount = typeof value.workerCount === "number" ? value.workerCount : fallbackWorkerCount;
+  return schedulerInfo(workerCount, normalizeResourceAllocation(value.resourceAllocation));
+}
+
+export function schedulerInfo(workerCount: number, resourceAllocation: PerformanceResourceAllocation | null = null): PerformanceSchedulerInfo {
   const normalizedWorkerCount = Math.max(1, Math.floor(workerCount));
   return {
-    id: "workflow-worker-lanes-v1",
+    id: resourceAllocation === null ? "workflow-worker-lanes-v1" : "workflow-worker-lanes-v2",
     mode: normalizedWorkerCount > 1 ? "parallel-workloads" : "single-worker",
-    workerCount: normalizedWorkerCount
+    workerCount: normalizedWorkerCount,
+    resourceAllocation
+  };
+}
+
+function isCalculationResourceProfile(value: unknown): value is CalculationResourceProfile {
+  return value === "light" || value === "balanced" || value === "performance";
+}
+
+export function calculationResourceProfileDefinition(profile: CalculationResourceProfile): CalculationResourceProfileDefinition {
+  return CALCULATION_RESOURCE_PROFILES.find((definition) => definition.id === profile) ?? CALCULATION_RESOURCE_PROFILES[1]!;
+}
+
+export function loadCalculationResourceProfile(): CalculationResourceProfile {
+  const local = storage();
+  if (local === null) return "balanced";
+  try {
+    const value = local.getItem(RESOURCE_PROFILE_STORAGE_KEY);
+    return isCalculationResourceProfile(value) ? value : "balanced";
+  } catch {
+    return "balanced";
+  }
+}
+
+export function saveCalculationResourceProfile(profile: CalculationResourceProfile): void {
+  const local = storage();
+  if (local === null) return;
+  try { local.setItem(RESOURCE_PROFILE_STORAGE_KEY, profile); } catch { /* best effort */ }
+}
+
+export interface TeamCalculationConcurrency {
+  readonly workerCount: number;
+  readonly resourceAllocation: PerformanceResourceAllocation;
+}
+
+/**
+ * Select the smallest measured lane count that reaches the selected share of
+ * this browser's measured peak. A smaller lane count leaves more capacity for
+ * the browser UI and other tabs while meeting the user's chosen target.
+ */
+export function teamCalculationConcurrency(
+  requestCount: number,
+  profile: CalculationResourceProfile,
+  benchmark: PerformanceBenchmark | null,
+  logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4
+): TeamCalculationConcurrency {
+  const definition = calculationResourceProfileDefinition(profile);
+  const cappedRequestCount = Math.max(1, Math.floor(requestCount));
+  const samples = benchmark?.cpuParallelSamples
+    .filter((sample) => sample.evaluationsPerSecond > 0)
+    .sort((left, right) => left.workerCount - right.workerCount) ?? [];
+  const availableSamples = samples.filter((sample) => sample.workerCount <= cappedRequestCount);
+  if (samples.length > 0 && availableSamples.length > 0) {
+    const peak = Math.max(...samples.map((sample) => sample.evaluationsPerSecond));
+    const target = peak * definition.targetCapacityRatio;
+    const selected = availableSamples.find((sample) => sample.evaluationsPerSecond >= target)
+      ?? availableSamples.reduce((best, sample) => sample.evaluationsPerSecond > best.evaluationsPerSecond ? sample : best);
+    return {
+      workerCount: selected.workerCount,
+      resourceAllocation: {
+        profile,
+        targetCapacityRatio: definition.targetCapacityRatio,
+        source: "benchmark",
+        benchmarkPeakEvaluationsPerSecond: peak,
+        targetEvaluationsPerSecond: Math.round(target),
+        estimatedCapacityRatio: peak > 0 ? selected.evaluationsPerSecond / peak : null
+      }
+    };
+  }
+
+  const maximumWorkers = Math.max(1, Math.min(8, Math.floor(logicalCores)));
+  const workerCount = Math.min(cappedRequestCount, Math.max(1, Math.ceil(maximumWorkers * definition.targetCapacityRatio)));
+  return {
+    workerCount,
+    resourceAllocation: {
+      profile,
+      targetCapacityRatio: definition.targetCapacityRatio,
+      source: "logical-core-estimate",
+      benchmarkPeakEvaluationsPerSecond: null,
+      targetEvaluationsPerSecond: null,
+      estimatedCapacityRatio: workerCount / maximumWorkers
+    }
   };
 }
 

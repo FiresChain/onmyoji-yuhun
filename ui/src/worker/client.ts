@@ -19,6 +19,12 @@ import type {
   YuhunDecisionRowDTO,
   WorkflowErrorDTO
 } from "../../../src/browser.js";
+import {
+  teamCalculationConcurrency,
+  type CalculationResourceProfile,
+  type PerformanceBenchmark,
+  type PerformanceResourceAllocation
+} from "../performance.js";
 
 export interface WorkerProgress {
   readonly phase: "baseline" | "simulation" | "team-calculation";
@@ -50,7 +56,25 @@ export function teamCalculationWorkerCount(
   logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4
 ): number {
   if (requestCount <= 1) return Math.max(0, requestCount);
-  return Math.min(requestCount, Math.max(2, Math.min(4, Math.floor(logicalCores / 2))));
+  return teamCalculationConcurrency(requestCount, "balanced", null, logicalCores).workerCount;
+}
+
+export interface TeamCalculationSchedule {
+  readonly workerCount: number;
+  readonly resourceAllocation: PerformanceResourceAllocation;
+}
+
+export function resolveTeamCalculationSchedule(
+  requests: readonly TeamCalculationRequest[],
+  profile: CalculationResourceProfile,
+  benchmark: PerformanceBenchmark | null,
+  logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4
+): TeamCalculationSchedule {
+  const allocation = teamCalculationConcurrency(requests.length, profile, benchmark, logicalCores);
+  return {
+    ...allocation,
+    workerCount: requests.length <= 1 || requiresOrderedSceneMutualExclusion(requests) ? 1 : allocation.workerCount
+  };
 }
 
 interface PendingRequest<T> {
@@ -182,15 +206,17 @@ export class WorkflowClient {
   async calculateTeamTargets(
     requests: readonly TeamCalculationRequest[],
     onProgress?: (progress: WorkerProgress) => void,
-    onReport?: (report: TeamCalculationReportDTO) => void
+    onReport?: (report: TeamCalculationReportDTO) => void,
+    schedule?: TeamCalculationSchedule
   ): Promise<readonly TeamCalculationReportDTO[]> {
     this.pauseRequested = false;
     if (this.snapshotRestore !== null) {
       await this.snapshotRestore;
       this.snapshotRestore = null;
     }
-    if (requests.length > 1 && this.snapshotBuffer !== null && !requiresOrderedSceneMutualExclusion(requests)) {
-      return this.calculateTeamTargetsParallel(requests, onProgress, onReport);
+    const concurrency = schedule?.workerCount ?? teamCalculationWorkerCount(requests.length);
+    if (requests.length > 1 && concurrency > 1 && this.snapshotBuffer !== null && !requiresOrderedSceneMutualExclusion(requests)) {
+      return this.calculateTeamTargetsParallel(requests, onProgress, onReport, concurrency);
     }
     return this.call("calculateTeamTargets", [requests], [], onProgress, onReport);
   }
@@ -198,7 +224,8 @@ export class WorkflowClient {
   private async calculateTeamTargetsParallel(
     requests: readonly TeamCalculationRequest[],
     onProgress?: (progress: WorkerProgress) => void,
-    onReport?: (report: TeamCalculationReportDTO) => void
+    onReport?: (report: TeamCalculationReportDTO) => void,
+    requestedConcurrency = teamCalculationWorkerCount(requests.length)
   ): Promise<readonly TeamCalculationReportDTO[]> {
     const snapshot = this.snapshotBuffer;
     if (snapshot === null) return this.call("calculateTeamTargets", [requests], [], onProgress, onReport);
@@ -207,7 +234,7 @@ export class WorkflowClient {
     // pieces), so independent worker lanes preserve ordering inside a lineup
     // while allowing different lineups to make progress together.
     const reports = new Array<TeamCalculationReportDTO>(requests.length);
-    const concurrency = teamCalculationWorkerCount(requests.length);
+    const concurrency = Math.min(requests.length, Math.max(1, Math.floor(requestedConcurrency)));
     let nextIndex = 0;
     const runWorker = async (): Promise<void> => {
       const client = new WorkflowClient();

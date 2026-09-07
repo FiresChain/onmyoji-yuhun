@@ -7,6 +7,7 @@ import {
   savePerformanceGpu,
   type PerformanceBenchmark,
   type PerformanceCpuBenchmark,
+  type PerformanceCpuParallelSample,
   type PerformanceDeviceInfo,
   type PerformanceMemoryBenchmark
 } from "./performance.js";
@@ -58,27 +59,36 @@ function runWorkerBenchmark<T extends WorkerBenchmark>(kind: "cpu" | "memory", d
   });
 }
 
+async function runCpuParallelSample(workerCount: number): Promise<PerformanceCpuParallelSample> {
+  const workers = await Promise.all(Array.from(
+    { length: workerCount },
+    () => runWorkerBenchmark<PerformanceCpuBenchmark>("cpu", 500)
+  ));
+  const durationMs = Math.max(...workers.map((value) => value.durationMs));
+  const evaluatedCombinations = workers.reduce((sum, value) => sum + value.evaluatedCombinations, 0);
+  return {
+    id: "cpu-yuhun-search-js-v1",
+    workerCount,
+    durationMs,
+    evaluatedCombinations,
+    evaluationsPerSecond: Math.round(evaluatedCombinations / (durationMs / 1_000)),
+    checksum: workers.reduce((sum, value) => sum + value.checksum, 0)
+  };
+}
+
 async function executePerformanceBenchmark(device: PerformanceDeviceInfo): Promise<PerformanceBenchmark> {
   const startedAt = performance.now();
-  const cpuSingle = await runWorkerBenchmark<PerformanceCpuBenchmark>("cpu", 900);
-  const memory = await runWorkerBenchmark<PerformanceMemoryBenchmark>("memory", 450);
   const cpuMultiWorkerCount = Math.max(1, Math.min(8, device.logicalCores ?? 2));
-  const cpuWorkers = await Promise.all(Array.from(
-    { length: cpuMultiWorkerCount },
-    () => runWorkerBenchmark<PerformanceCpuBenchmark>("cpu", 900)
-  ));
-  const multiDurationMs = Math.max(...cpuWorkers.map((value) => value.durationMs));
-  const multiEvaluations = cpuWorkers.reduce((sum, value) => sum + value.evaluatedCombinations, 0);
-  const cpuMulti: PerformanceCpuBenchmark = {
-    id: "cpu-yuhun-search-js-v1",
-    durationMs: multiDurationMs,
-    evaluatedCombinations: multiEvaluations,
-    evaluationsPerSecond: Math.round(multiEvaluations / (multiDurationMs / 1_000)),
-    checksum: cpuWorkers.reduce((sum, value) => sum + value.checksum, 0)
-  };
+  const cpuParallelSamples: PerformanceCpuParallelSample[] = [];
+  for (let workerCount = 1; workerCount <= cpuMultiWorkerCount; workerCount += 1) {
+    cpuParallelSamples.push(await runCpuParallelSample(workerCount));
+  }
+  const cpuSingle = cpuParallelSamples[0]!;
+  const memory = await runWorkerBenchmark<PerformanceMemoryBenchmark>("memory", 450);
+  const cpuMulti = cpuParallelSamples[cpuParallelSamples.length - 1]!;
   const gpu = await runGpuBenchmark(900);
   const result: PerformanceBenchmark = {
-    id: "onmyoji-hardware-profile-v1",
+    id: "onmyoji-hardware-profile-v2",
     measuredAt: new Date().toISOString(),
     environmentKey: performanceEnvironmentKey(device),
     totalDurationMs: performance.now() - startedAt,
@@ -88,6 +98,7 @@ async function executePerformanceBenchmark(device: PerformanceDeviceInfo): Promi
     cpuParallelSpeedup: cpuSingle.evaluationsPerSecond > 0
       ? cpuMulti.evaluationsPerSecond / cpuSingle.evaluationsPerSecond
       : 0,
+    cpuParallelSamples,
     memory,
     gpu
   };

@@ -5,8 +5,10 @@ import { Activity, AlertTriangle, Cpu, Database, DatabaseBackup, Download, Folde
 import { STEPS } from "./router.js";
 import { useWorkbenchStore } from "./store.js";
 import {
+  CALCULATION_RESOURCE_PROFILES,
   capturePerformanceDevice,
   loadPerformanceBenchmark,
+  type CalculationResourceProfile,
   type PerformanceBenchmark,
   type PerformanceRecord,
   type PerformanceTargetTiming
@@ -55,6 +57,11 @@ function openPerformanceDialog(): void {
 function updateTelemetryConsent(enabled: boolean): void {
   telemetryEnabled.value = enabled;
   setTelemetryConsent(enabled);
+}
+
+function updateTeamCalculationResourceProfile(value: string): void {
+  if (!CALCULATION_RESOURCE_PROFILES.some((profile) => profile.id === value)) return;
+  store.setTeamCalculationResourceProfile(value as CalculationResourceProfile);
 }
 
 const operationLabels = {
@@ -121,6 +128,16 @@ function formatAlgorithmParameters(entry: PerformanceRecord): string {
   return parameters.map(([key, value]) => `${key}=${String(value)}`).join(" · ");
 }
 
+function resourceAllocationLabel(entry: PerformanceRecord): string | null {
+  const allocation = entry.scheduler.resourceAllocation;
+  if (allocation === null) return null;
+  const label = CALCULATION_RESOURCE_PROFILES.find((profile) => profile.id === allocation.profile)?.label ?? allocation.profile;
+  const estimate = allocation.estimatedCapacityRatio === null
+    ? ""
+    : ` · 预计 ${(allocation.estimatedCapacityRatio * 100).toFixed(0)}%`;
+  return `资源 ${label} · 目标 ${(allocation.targetCapacityRatio * 100).toFixed(0)}%${estimate}`;
+}
+
 function comparisonLabel(index: number, entry: PerformanceRecord): string | null {
   const previous = store.performanceHistory.slice(index + 1).find((candidate) =>
     candidate.operation === entry.operation
@@ -134,6 +151,8 @@ function comparisonLabel(index: number, entry: PerformanceRecord): string | null
     && candidate.scheduler.id === entry.scheduler.id
     && candidate.scheduler.mode === entry.scheduler.mode
     && candidate.scheduler.workerCount === entry.scheduler.workerCount
+    && candidate.scheduler.resourceAllocation?.profile === entry.scheduler.resourceAllocation?.profile
+    && candidate.scheduler.resourceAllocation?.targetCapacityRatio === entry.scheduler.resourceAllocation?.targetCapacityRatio
     && candidate.benchmark?.id === entry.benchmark?.id
     && candidate.benchmark?.environmentKey === entry.benchmark?.environmentKey
   );
@@ -233,7 +252,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
           </nav>
           <div class="performance-dialog-body diagnostics-content">
           <section v-if="diagnosticsSection === 'device'" class="diagnostics-section">
-            <header><div><span class="eyebrow">DEVICE</span><h3>基础信息</h3></div><button class="primary" :disabled="benchmarkRunning" @click="run(runPerformanceTest)"><Gauge :size="15" />{{ benchmarkRunning ? '测试约 4 秒…' : '性能测试' }}</button></header>
+            <header><div><span class="eyebrow">DEVICE</span><h3>基础信息</h3></div><button class="primary" :disabled="benchmarkRunning" @click="run(runPerformanceTest)"><Gauge :size="15" />{{ benchmarkRunning ? '正在测试…' : '性能测试' }}</button></header>
             <div class="telemetry-setting">
               <div><strong>匿名数据收集</strong><span>仅上传性能聚合记录和你主动保存的自定义阵容，不上传快照、御魂 ID 或账号信息。</span><small>接口：{{ telemetryApiUrl() }}</small></div>
               <label class="switch"><input type="checkbox" :checked="telemetryEnabled" @change="updateTelemetryConsent(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ telemetryEnabled ? '已允许' : '已关闭' }}</b></label>
@@ -249,6 +268,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div><dt>CPU 单核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuSingle.evaluationsPerSecond.toLocaleString()} 组合/秒` }}</dd></div>
               <div><dt>CPU 多核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · ${benchmark.cpuMultiWorkerCount} Worker` }}</dd></div>
               <div><dt>CPU 并行倍率</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuParallelSpeedup.toFixed(2)}×` }}</dd></div>
+              <div><dt>阵容计算资源</dt><dd><select :value="store.teamCalculationResourceProfile" :disabled="store.busy !== null" aria-label="阵容计算资源档位" @change="updateTeamCalculationResourceProfile(($event.target as HTMLSelectElement).value)"><option v-for="profile in CALCULATION_RESOURCE_PROFILES" :key="profile.id" :value="profile.id">{{ profile.label }}</option></select></dd></div>
               <div><dt>内存吞吐</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒` }}</dd></div>
               <div><dt>GPU 计算</dt><dd>{{ benchmark === null ? '尚未测试' : benchmark.gpu.status === 'completed' ? `${benchmark.gpu.iterationsPerSecond?.toLocaleString()} f32 迭代/秒` : `${benchmark.gpu.status} · ${benchmark.gpu.reason ?? '无详情'}` }}</dd></div>
               <div><dt>GPU 传输</dt><dd>{{ benchmark?.gpu.status !== 'completed' ? '尚无数据' : `上传 ${benchmark.gpu.uploadMebibytesPerSecond?.toLocaleString() ?? '-'} · 回读 ${benchmark.gpu.readbackMebibytesPerSecond?.toLocaleString() ?? '-'} MiB/秒` }}</dd></div>
@@ -256,7 +276,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div><dt>测试总耗时</dt><dd>{{ benchmark === null ? '尚未测试' : formatMs(benchmark.totalDurationMs) }}</dd></div>
               <div><dt>基准版本</dt><dd>{{ benchmark === null ? 'onmyoji-hardware-profile-v1' : `${benchmark.id} · ${formatRecordedAt(benchmark.measuredAt)}` }}</dd></div>
             </dl>
-            <p class="performance-notice">真实计算开始前会自动刷新超过 24 小时的画像；一次测试依次测量御魂搜索单核、多 Worker、内存与 WebGPU。结果保存在本机并附加到之后的计算记录。</p>
+            <p class="performance-notice">真实计算开始前会自动刷新超过 24 小时的画像；一次测试依次测量御魂搜索 1 至 N Worker 的吞吐曲线、内存与 WebGPU。阵容计算按所选档位从曲线中选择并发数，结果保存在本机并附加到之后的计算记录。</p>
           </section>
           <section v-else-if="diagnosticsSection === 'performance'" class="diagnostics-section">
             <div v-if="store.performanceHistory.length === 0" class="performance-empty">
@@ -283,7 +303,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div class="performance-stages">
                 <span v-for="stage in entry.stages" :key="stage.name">{{ stage.name }} <b>{{ formatMs(stage.elapsedMs) }}</b></span>
               </div>
-              <div class="performance-comparison">算法 {{ entry.algorithm.id }} · {{ entry.algorithm.runtime }} · 调度 {{ entry.scheduler.id }} / {{ entry.scheduler.mode }} · Worker {{ entry.scheduler.workerCount }} · 剪枝 {{ entry.pruningRate === null ? "-" : `${(entry.pruningRate * 100).toFixed(1)}%` }} · 搜索吞吐 {{ entry.evaluatedPerSecond === null ? "-" : `${Math.round(entry.evaluatedPerSecond).toLocaleString()}/s` }} · 端到端吞吐 {{ entry.endToEndEvaluatedPerSecond === null ? "-" : `${Math.round(entry.endToEndEvaluatedPerSecond).toLocaleString()}/s` }} · 精确 {{ entry.exactCount }} / 近似 {{ entry.approximateCount }}</div>
+              <div class="performance-comparison">算法 {{ entry.algorithm.id }} · {{ entry.algorithm.runtime }} · 调度 {{ entry.scheduler.id }} / {{ entry.scheduler.mode }} · Worker {{ entry.scheduler.workerCount }}<template v-if="resourceAllocationLabel(entry)"> · {{ resourceAllocationLabel(entry) }}</template> · 剪枝 {{ entry.pruningRate === null ? "-" : `${(entry.pruningRate * 100).toFixed(1)}%` }} · 搜索吞吐 {{ entry.evaluatedPerSecond === null ? "-" : `${Math.round(entry.evaluatedPerSecond).toLocaleString()}/s` }} · 端到端吞吐 {{ entry.endToEndEvaluatedPerSecond === null ? "-" : `${Math.round(entry.endToEndEvaluatedPerSecond).toLocaleString()}/s` }} · 精确 {{ entry.exactCount }} / 近似 {{ entry.approximateCount }}</div>
               <div class="performance-parameters">参数：{{ formatAlgorithmParameters(entry) }}</div>
               <div v-if="comparisonLabel(index, entry)" class="performance-delta">{{ comparisonLabel(index, entry) }}</div>
               <details v-if="entry.targets.length > 0" class="performance-targets">

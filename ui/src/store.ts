@@ -44,17 +44,21 @@ import {
   type WorkbenchViewStateV1
 } from "./persistence.js";
 import { findTargetScene, localCatalogOverlay, mergePublishedCatalog, targetScenePaths, TARGET_CATALOG, type TargetDomain } from "./target-catalog.js";
-import { WorkflowClient, WorkflowClientError, WorkflowClientPausedError, teamCalculationWorkerCount, type WorkerProgress } from "./worker/client.js";
+import { WorkflowClient, WorkflowClientError, WorkflowClientPausedError, resolveTeamCalculationSchedule, type WorkerProgress } from "./worker/client.js";
 import {
   appendPerformanceRecord,
   capturePerformanceDevice,
   clearPerformanceHistory,
+  loadCalculationResourceProfile,
   loadPerformanceBenchmark,
   loadPerformanceHistory,
   newPerformanceId,
+  saveCalculationResourceProfile,
   schedulerInfo,
+  type CalculationResourceProfile,
   type PerformanceOperation,
   type PerformanceRecord,
+  type PerformanceSchedulerInfo,
   type PerformanceStageTiming,
   type PerformanceTargetTiming
 } from "./performance.js";
@@ -209,6 +213,7 @@ function messageFor(error: unknown): WorkflowErrorDTO {
 export const useWorkbenchStore = defineStore("workbench", () => {
   const client = new WorkflowClient();
   const performanceHistory = ref<readonly PerformanceRecord[]>(loadPerformanceHistory());
+  const teamCalculationResourceProfile = ref<CalculationResourceProfile>(loadCalculationResourceProfile());
   const snapshot = ref<SnapshotSummaryDTO | null>(null);
   const analysis = ref<AnalysisSummaryDTO | null>(null);
   const inventory = ref<PageDTO<InventoryRowDTO> | null>(null);
@@ -266,6 +271,19 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     }
   }
 
+  function scheduleTeamCalculation(requests: readonly TeamCalculationRequest[]) {
+    return resolveTeamCalculationSchedule(
+      requests,
+      teamCalculationResourceProfile.value,
+      loadPerformanceBenchmark()
+    );
+  }
+
+  function setTeamCalculationResourceProfile(profile: CalculationResourceProfile): void {
+    teamCalculationResourceProfile.value = profile;
+    saveCalculationResourceProfile(profile);
+  }
+
   function recordPerformance(input: {
     operation: PerformanceOperation;
     itemCount: number | null;
@@ -279,6 +297,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     algorithmId: string;
     algorithmParameters?: Readonly<Record<string, string | number | boolean>>;
     workerCount?: number;
+    scheduler?: PerformanceSchedulerInfo;
   }): PerformanceRecord {
     const reports = input.reports ?? [];
     const entities = reports.flatMap((report) => report.entities);
@@ -310,8 +329,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const stages = input.stages.length > 0
       ? input.stages
       : [{ name: "calculateTarget（目标计算合计）", elapsedMs: targetElapsed }];
+    const scheduler = input.scheduler ?? schedulerInfo(input.workerCount ?? 1);
     const record: PerformanceRecord = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       kind: "onmyoji-yuhun-performance",
       id: newPerformanceId(),
       recordedAt: new Date().toISOString(),
@@ -342,9 +362,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         parameters: {
           ...input.algorithmParameters
         },
-        workerCount: input.workerCount ?? 1
+        workerCount: scheduler.workerCount
       },
-      scheduler: schedulerInfo(input.workerCount ?? 1),
+      scheduler,
       app: {
         version: import.meta.env.VITE_APP_VERSION ?? "0.1.0",
         buildId: import.meta.env.VITE_BUILD_ID ?? null
@@ -757,12 +777,15 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const startedAt = now();
     const stages: PerformanceStageTiming[] = [];
     let analysisWorkerCount = 1;
+    let analysisScheduler = schedulerInfo(1);
     let performanceReports: readonly TeamCalculationReportDTO[] = [];
     try {
       if (enabledTeamTargets.value.length > 0 && teamCalculations.value.length === 0 && (snapshot.value?.heroCount ?? 0) > 0) {
         const teamStartedAt = now();
         const requests = teamCalculationRequests();
-        analysisWorkerCount = teamCalculationWorkerCount(requests.length);
+        const schedule = scheduleTeamCalculation(requests);
+        analysisWorkerCount = schedule.workerCount;
+        analysisScheduler = schedulerInfo(schedule.workerCount, schedule.resourceAllocation);
         initializeTeamCalculationProgress(requests);
         teamCalculations.value = await client.calculateTeamTargets(requests, (value) => {
           progress.value = value;
@@ -770,7 +793,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         }, (report) => {
           teamCalculations.value = [...teamCalculations.value.filter((item) => item.id !== report.id), report];
           markTeamCalculationResultsCompleted([report]);
-        });
+        }, schedule);
         markTeamCalculationResultsCompleted(teamCalculations.value);
         performanceReports = teamCalculations.value;
         stages.push({ name: "calculateTeamTargets（阵容计算）", elapsedMs: Math.max(0, now() - teamStartedAt) });
@@ -809,7 +832,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
           teamCalculationIncluded: performanceReports.length > 0
         },
-        workerCount: analysisWorkerCount
+        workerCount: analysisWorkerCount,
+        scheduler: analysisScheduler
       });
       notice.value = teamCalculations.value.length > 0
         ? `分析完成；规则命中与阵容潜力已合并到单件御魂决策（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，实际评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`
@@ -940,6 +964,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     begin("正在计算阵容御魂搭配");
     const startedAt = now();
     try {
+      const initialSchedule = scheduleTeamCalculation(requests);
       const runTargetIds = new Set((smartMode
         ? smartGroups.flatMap((group) => group.targets)
         : manualTargets).map((target) => target.id));
@@ -964,7 +989,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         void persistSessionNow();
       };
       if (!smartMode) {
-        const result = await client.calculateTeamTargets(requests, onProgress, onReport);
+        const result = await client.calculateTeamTargets(requests, onProgress, onReport, initialSchedule);
         for (const report of result) upsertReport(report);
       } else {
         const nextSmartIndex = (group: SmartTeamTargetGroup): number | null => {
@@ -999,7 +1024,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
             return teamCalculationRequestFor(target, occupied);
           });
           markTeamCalculationPending(roundRequests);
-          const roundReports = await client.calculateTeamTargets(roundRequests, onProgress, onReport);
+          const roundReports = await client.calculateTeamTargets(roundRequests, onProgress, onReport, scheduleTeamCalculation(roundRequests));
           for (const report of roundReports) upsertReport(report);
           const next = active.flatMap(({ group }) => {
             const index = nextSmartIndex(group);
@@ -1026,7 +1051,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           candidateLimitPerPosition: TEAM_CALCULATION_SEARCH_DEFAULTS.candidateLimitPerPosition,
           topN: "20-or-100"
         },
-        workerCount: teamCalculationWorkerCount(requests.length)
+        workerCount: initialSchedule.workerCount,
+        scheduler: schedulerInfo(initialSchedule.workerCount, initialSchedule.resourceAllocation)
       });
       const entities = teamCalculations.value.flatMap((report) => report.entities);
       const success = entities.filter((entity) => entity.status === "success").length;
@@ -1771,12 +1797,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan, simulation, checklist, mobileHandoff,
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
-    performanceHistory,
+    performanceHistory, teamCalculationResourceProfile,
     importSnapshot, loadInventory, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
-    invalidatePolicy, confirmPolicy,
+    invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile,
     setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets
