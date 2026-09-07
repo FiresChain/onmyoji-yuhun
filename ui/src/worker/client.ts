@@ -64,28 +64,79 @@ export function resolveTeamCalculationSchedule(
   const allocation = teamCalculationConcurrency(requests.length, profile, benchmark, logicalCores, customWorkerCount);
   return {
     ...allocation,
-    workerCount: Math.min(Math.max(1, calculationChains(requests).length), allocation.workerCount)
+    workerCount: Math.min(Math.max(1, initialRunnableTaskCount(requests)), allocation.workerCount)
   };
 }
 
-interface CalculationChain {
-  readonly requests: readonly { readonly request: TeamCalculationRequest; readonly targetIndex: number }[];
+interface ScheduledTeamTask {
+  readonly request: TeamCalculationRequest;
+  readonly targetIndex: number;
+  readonly mutualSceneId: string | null;
 }
 
-function calculationChains(requests: readonly TeamCalculationRequest[]): CalculationChain[] {
-  const chains: CalculationChain[] = [];
-  const mutualByScene = new Map<string, { request: TeamCalculationRequest; targetIndex: number }[]>();
+interface MutualSceneQueue {
+  readonly tasks: ScheduledTeamTask[];
+  readonly occupiedYuhunIds: Set<string>;
+}
+
+interface TeamTaskQueues {
+  readonly normal: ScheduledTeamTask[];
+  readonly mutualByScene: Map<string, MutualSceneQueue>;
+  readonly readyMutualSceneIds: string[];
+  preferNormal: boolean;
+}
+
+function createTeamTaskQueues(requests: readonly TeamCalculationRequest[]): TeamTaskQueues {
+  const normal: ScheduledTeamTask[] = [];
+  const mutualByScene = new Map<string, MutualSceneQueue>();
   requests.forEach((request, targetIndex) => {
     if (request.sceneMutualExclusion === true && request.sceneId !== undefined) {
-      const chain = mutualByScene.get(request.sceneId) ?? [];
-      chain.push({ request, targetIndex });
-      mutualByScene.set(request.sceneId, chain);
+      const queue = mutualByScene.get(request.sceneId) ?? {
+        tasks: [],
+        occupiedYuhunIds: new Set<string>()
+      };
+      queue.tasks.push({ request, targetIndex, mutualSceneId: request.sceneId });
+      mutualByScene.set(request.sceneId, queue);
       return;
     }
-    chains.push({ requests: [{ request, targetIndex }] });
+    normal.push({ request, targetIndex, mutualSceneId: null });
   });
-  for (const requestsForScene of mutualByScene.values()) chains.push({ requests: requestsForScene });
-  return chains.sort((left, right) => (left.requests[0]?.targetIndex ?? 0) - (right.requests[0]?.targetIndex ?? 0));
+  return {
+    normal,
+    mutualByScene,
+    readyMutualSceneIds: [...mutualByScene.keys()],
+    preferNormal: true
+  };
+}
+
+function initialRunnableTaskCount(requests: readonly TeamCalculationRequest[]): number {
+  const queues = createTeamTaskQueues(requests);
+  return queues.normal.length + queues.readyMutualSceneIds.length;
+}
+
+function takeNextTeamTask(queues: TeamTaskQueues): ScheduledTeamTask | null {
+  // Alternate between queues while both have work. This preserves FIFO within
+  // each queue without starving a ready mutual-exclusion scene behind a long
+  // list of independent lineups.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const takeNormal = queues.preferNormal;
+    queues.preferNormal = !queues.preferNormal;
+    if (takeNormal) {
+      const task = queues.normal.shift();
+      if (task !== undefined) return task;
+      continue;
+    }
+    const sceneId = queues.readyMutualSceneIds.shift();
+    if (sceneId === undefined) continue;
+    const task = queues.mutualByScene.get(sceneId)?.tasks.shift();
+    if (task !== undefined) return task;
+  }
+  return null;
+}
+
+function releaseMutualScene(queues: TeamTaskQueues, sceneId: string): void {
+  const queue = queues.mutualByScene.get(sceneId);
+  if (queue !== undefined && queue.tasks.length > 0) queues.readyMutualSceneIds.push(sceneId);
 }
 
 interface PendingRequest<T> {
@@ -241,13 +292,16 @@ export class WorkflowClient {
     const snapshot = this.snapshotBuffer;
     if (snapshot === null) return this.call("calculateTeamTargets", [requests], [], onProgress, onReport);
 
-    // Each lineup owns its own workflow state (dynamic bounds and occupied
-    // pieces), so independent worker lanes preserve ordering inside a lineup
-    // while allowing different lineups to make progress together.
+    // Independent lineups use a FIFO queue. Each mutual-exclusion scene has
+    // its own FIFO queue and only releases its next lineup after the previous
+    // report has contributed occupied pieces. An idle Worker can therefore
+    // keep taking unrelated work instead of owning a whole scene chain.
     const reports = new Array<TeamCalculationReportDTO>(requests.length);
-    const chains = calculationChains(requests);
-    const concurrency = Math.min(chains.length, Math.max(1, Math.floor(requestedConcurrency)));
-    let nextChainIndex = 0;
+    const queues = createTeamTaskQueues(requests);
+    const concurrency = Math.min(
+      Math.max(1, initialRunnableTaskCount(requests)),
+      Math.max(1, Math.floor(requestedConcurrency))
+    );
     const runWorker = async (): Promise<void> => {
       const client = new WorkflowClient();
         this.parallelClients.add(client);
@@ -255,26 +309,31 @@ export class WorkflowClient {
         const snapshotCopy = snapshot.slice(0);
         await client.importSnapshot(snapshotCopy);
         while (true) {
-          const chain = chains[nextChainIndex++];
-          if (chain === undefined) return;
-          const occupied = new Set<string>();
-          for (const { request, targetIndex } of chain.requests) {
-            const effectiveRequest = request.sceneMutualExclusion === true
-              ? { ...request, occupiedYuhunIds: [...new Set([...(request.occupiedYuhunIds ?? []), ...occupied])] }
-              : request;
-            const result = await client.calculateTeamTargets([effectiveRequest], (progress) => {
-              onProgress?.({
-                ...progress,
-                targetId: request.id,
-                targetLabel: request.label,
-                targetIndex,
-                targetTotal: requests.length
-              });
-            }, (report) => onReport?.(report));
-            const report = result[0];
-            if (report === undefined) throw new Error(`阵容“${request.label}”没有返回计算结果`);
-            reports[targetIndex] = report;
-            for (const id of report.reservedYuhunIds ?? []) occupied.add(id);
+          const task = takeNextTeamTask(queues);
+          if (task === null) return;
+          const { request, targetIndex, mutualSceneId } = task;
+          const mutualQueue = mutualSceneId === null ? undefined : queues.mutualByScene.get(mutualSceneId);
+          const effectiveRequest = mutualQueue === undefined
+            ? request
+            : {
+              ...request,
+              occupiedYuhunIds: [...new Set([...(request.occupiedYuhunIds ?? []), ...mutualQueue.occupiedYuhunIds])]
+            };
+          const result = await client.calculateTeamTargets([effectiveRequest], (progress) => {
+            onProgress?.({
+              ...progress,
+              targetId: request.id,
+              targetLabel: request.label,
+              targetIndex,
+              targetTotal: requests.length
+            });
+          }, (report) => onReport?.(report));
+          const report = result[0];
+          if (report === undefined) throw new Error(`阵容“${request.label}”没有返回计算结果`);
+          reports[targetIndex] = report;
+          if (mutualQueue !== undefined && mutualSceneId !== null) {
+            for (const id of report.reservedYuhunIds ?? []) mutualQueue.occupiedYuhunIds.add(id);
+            releaseMutualScene(queues, mutualSceneId);
           }
         }
       } finally {
