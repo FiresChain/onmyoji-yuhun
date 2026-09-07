@@ -73,7 +73,7 @@ export interface PerformanceBenchmark {
   readonly gpu: PerformanceGpuBenchmark;
 }
 
-export type CalculationResourceProfile = "light" | "balanced" | "performance";
+export type CalculationResourceProfile = "light" | "balanced" | "performance" | "custom";
 
 export interface CalculationResourceProfileDefinition {
   readonly id: CalculationResourceProfile;
@@ -84,13 +84,14 @@ export interface CalculationResourceProfileDefinition {
 export const CALCULATION_RESOURCE_PROFILES: readonly CalculationResourceProfileDefinition[] = [
   { id: "light", label: "轻量 30%", targetCapacityRatio: 0.3 },
   { id: "balanced", label: "平衡 50%", targetCapacityRatio: 0.5 },
-  { id: "performance", label: "性能 70%", targetCapacityRatio: 0.7 }
+  { id: "performance", label: "性能 70%", targetCapacityRatio: 0.7 },
+  { id: "custom", label: "自定义", targetCapacityRatio: 0 }
 ];
 
 export interface PerformanceResourceAllocation {
   readonly profile: CalculationResourceProfile;
   readonly targetCapacityRatio: number;
-  readonly source: "benchmark" | "logical-core-estimate";
+  readonly source: "benchmark" | "logical-core-estimate" | "custom";
   readonly benchmarkPeakEvaluationsPerSecond: number | null;
   readonly targetEvaluationsPerSecond: number | null;
   readonly estimatedCapacityRatio: number | null;
@@ -171,6 +172,7 @@ const STORAGE_KEY = "onmyoji-yuhun-performance-history-v1";
 const BENCHMARK_STORAGE_KEY = "onmyoji-yuhun-performance-benchmark-v3";
 const GPU_STORAGE_KEY = "onmyoji-yuhun-performance-gpu-v1";
 const RESOURCE_PROFILE_STORAGE_KEY = "onmyoji-yuhun-calculation-resource-profile-v1";
+const CUSTOM_WORKER_COUNT_STORAGE_KEY = "onmyoji-yuhun-calculation-worker-count-v1";
 const MAX_RECORDS = 50;
 const BENCHMARK_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
@@ -391,7 +393,7 @@ function normalizeResourceAllocation(value: unknown): PerformanceResourceAllocat
   if (!isRecord(value)
     || !isCalculationResourceProfile(value.profile)
     || typeof value.targetCapacityRatio !== "number"
-    || (value.source !== "benchmark" && value.source !== "logical-core-estimate")) return null;
+    || (value.source !== "benchmark" && value.source !== "logical-core-estimate" && value.source !== "custom")) return null;
   return {
     profile: value.profile,
     targetCapacityRatio: value.targetCapacityRatio,
@@ -419,7 +421,7 @@ export function schedulerInfo(workerCount: number, resourceAllocation: Performan
 }
 
 function isCalculationResourceProfile(value: unknown): value is CalculationResourceProfile {
-  return value === "light" || value === "balanced" || value === "performance";
+  return value === "light" || value === "balanced" || value === "performance" || value === "custom";
 }
 
 export function calculationResourceProfileDefinition(profile: CalculationResourceProfile): CalculationResourceProfileDefinition {
@@ -443,6 +445,26 @@ export function saveCalculationResourceProfile(profile: CalculationResourceProfi
   try { local.setItem(RESOURCE_PROFILE_STORAGE_KEY, profile); } catch { /* best effort */ }
 }
 
+export function loadCustomWorkerCount(): number | null {
+  const local = storage();
+  if (local === null) return null;
+  try {
+    const value = Number(local.getItem(CUSTOM_WORKER_COUNT_STORAGE_KEY));
+    return Number.isSafeInteger(value) && value >= 1 && value <= 64 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCustomWorkerCount(workerCount: number | null): void {
+  const local = storage();
+  if (local === null) return;
+  try {
+    if (workerCount === null) local.removeItem(CUSTOM_WORKER_COUNT_STORAGE_KEY);
+    else local.setItem(CUSTOM_WORKER_COUNT_STORAGE_KEY, String(Math.max(1, Math.min(64, Math.floor(workerCount)))));
+  } catch { /* best effort */ }
+}
+
 export interface TeamCalculationConcurrency {
   readonly workerCount: number;
   readonly resourceAllocation: PerformanceResourceAllocation;
@@ -457,10 +479,29 @@ export function teamCalculationConcurrency(
   requestCount: number,
   profile: CalculationResourceProfile,
   benchmark: PerformanceBenchmark | null,
-  logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4
+  logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4,
+  customWorkerCount: number | null = null
 ): TeamCalculationConcurrency {
   const definition = calculationResourceProfileDefinition(profile);
   const cappedRequestCount = Math.max(1, Math.floor(requestCount));
+  if (profile === "custom") {
+    const workerCount = Math.min(cappedRequestCount, Math.min(64, Math.max(1, Math.floor(customWorkerCount ?? 1))));
+    return {
+      workerCount,
+      resourceAllocation: {
+        profile,
+        targetCapacityRatio: definition.targetCapacityRatio,
+        source: "custom",
+        benchmarkPeakEvaluationsPerSecond: benchmark?.cpuParallelSamples.length
+          ? Math.max(...benchmark.cpuParallelSamples.map((sample) => sample.evaluationsPerSecond))
+          : null,
+        targetEvaluationsPerSecond: null,
+        estimatedCapacityRatio: benchmark?.cpuMultiWorkerCount
+          ? workerCount / benchmark.cpuMultiWorkerCount
+          : null
+      }
+    };
+  }
   const samples = benchmark?.cpuParallelSamples
     .filter((sample) => sample.evaluationsPerSecond > 0)
     .sort((left, right) => left.workerCount - right.workerCount) ?? [];

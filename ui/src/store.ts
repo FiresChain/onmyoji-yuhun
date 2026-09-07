@@ -49,11 +49,13 @@ import {
   appendPerformanceRecord,
   capturePerformanceDevice,
   clearPerformanceHistory,
+  loadCustomWorkerCount,
   loadCalculationResourceProfile,
   loadPerformanceBenchmark,
   loadPerformanceHistory,
   newPerformanceId,
   saveCalculationResourceProfile,
+  saveCustomWorkerCount,
   schedulerInfo,
   type CalculationResourceProfile,
   type PerformanceOperation,
@@ -214,6 +216,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const client = new WorkflowClient();
   const performanceHistory = ref<readonly PerformanceRecord[]>(loadPerformanceHistory());
   const teamCalculationResourceProfile = ref<CalculationResourceProfile>(loadCalculationResourceProfile());
+  const customTeamCalculationWorkerCount = ref<number | null>(loadCustomWorkerCount());
   const snapshot = ref<SnapshotSummaryDTO | null>(null);
   const analysis = ref<AnalysisSummaryDTO | null>(null);
   const inventory = ref<PageDTO<InventoryRowDTO> | null>(null);
@@ -275,13 +278,20 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     return resolveTeamCalculationSchedule(
       requests,
       teamCalculationResourceProfile.value,
-      loadPerformanceBenchmark()
+      loadPerformanceBenchmark(),
+      undefined,
+      typeof customTeamCalculationWorkerCount.value === "number" ? customTeamCalculationWorkerCount.value : null
     );
   }
 
   function setTeamCalculationResourceProfile(profile: CalculationResourceProfile): void {
     teamCalculationResourceProfile.value = profile;
     saveCalculationResourceProfile(profile);
+  }
+
+  function setCustomTeamCalculationWorkerCount(value: number | null): void {
+    customTeamCalculationWorkerCount.value = value;
+    saveCustomWorkerCount(value);
   }
 
   function recordPerformance(input: {
@@ -1797,12 +1807,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan, simulation, checklist, mobileHandoff,
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
-    performanceHistory, teamCalculationResourceProfile,
+    performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount,
     importSnapshot, loadInventory, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
-    invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile,
+    invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount,
     setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets

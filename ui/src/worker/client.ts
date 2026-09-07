@@ -41,16 +41,6 @@ export interface WorkerProgress {
   readonly detail?: string;
 }
 
-function requiresOrderedSceneMutualExclusion(requests: readonly TeamCalculationRequest[]): boolean {
-  const seenSceneIds = new Set<string>();
-  for (const request of requests) {
-    if (request.sceneMutualExclusion !== true || request.sceneId === undefined) continue;
-    if (seenSceneIds.has(request.sceneId)) return true;
-    seenSceneIds.add(request.sceneId);
-  }
-  return false;
-}
-
 export function teamCalculationWorkerCount(
   requestCount: number,
   logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4
@@ -68,13 +58,34 @@ export function resolveTeamCalculationSchedule(
   requests: readonly TeamCalculationRequest[],
   profile: CalculationResourceProfile,
   benchmark: PerformanceBenchmark | null,
-  logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4
+  logicalCores = typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4,
+  customWorkerCount: number | null = null
 ): TeamCalculationSchedule {
-  const allocation = teamCalculationConcurrency(requests.length, profile, benchmark, logicalCores);
+  const allocation = teamCalculationConcurrency(requests.length, profile, benchmark, logicalCores, customWorkerCount);
   return {
     ...allocation,
-    workerCount: requests.length <= 1 || requiresOrderedSceneMutualExclusion(requests) ? 1 : allocation.workerCount
+    workerCount: Math.min(Math.max(1, calculationChains(requests).length), allocation.workerCount)
   };
+}
+
+interface CalculationChain {
+  readonly requests: readonly { readonly request: TeamCalculationRequest; readonly targetIndex: number }[];
+}
+
+function calculationChains(requests: readonly TeamCalculationRequest[]): CalculationChain[] {
+  const chains: CalculationChain[] = [];
+  const mutualByScene = new Map<string, { request: TeamCalculationRequest; targetIndex: number }[]>();
+  requests.forEach((request, targetIndex) => {
+    if (request.sceneMutualExclusion === true && request.sceneId !== undefined) {
+      const chain = mutualByScene.get(request.sceneId) ?? [];
+      chain.push({ request, targetIndex });
+      mutualByScene.set(request.sceneId, chain);
+      return;
+    }
+    chains.push({ requests: [{ request, targetIndex }] });
+  });
+  for (const requestsForScene of mutualByScene.values()) chains.push({ requests: requestsForScene });
+  return chains.sort((left, right) => (left.requests[0]?.targetIndex ?? 0) - (right.requests[0]?.targetIndex ?? 0));
 }
 
 interface PendingRequest<T> {
@@ -215,7 +226,7 @@ export class WorkflowClient {
       this.snapshotRestore = null;
     }
     const concurrency = schedule?.workerCount ?? teamCalculationWorkerCount(requests.length);
-    if (requests.length > 1 && concurrency > 1 && this.snapshotBuffer !== null && !requiresOrderedSceneMutualExclusion(requests)) {
+    if (requests.length > 1 && concurrency > 1 && this.snapshotBuffer !== null) {
       return this.calculateTeamTargetsParallel(requests, onProgress, onReport, concurrency);
     }
     return this.call("calculateTeamTargets", [requests], [], onProgress, onReport);
@@ -234,8 +245,9 @@ export class WorkflowClient {
     // pieces), so independent worker lanes preserve ordering inside a lineup
     // while allowing different lineups to make progress together.
     const reports = new Array<TeamCalculationReportDTO>(requests.length);
-    const concurrency = Math.min(requests.length, Math.max(1, Math.floor(requestedConcurrency)));
-    let nextIndex = 0;
+    const chains = calculationChains(requests);
+    const concurrency = Math.min(chains.length, Math.max(1, Math.floor(requestedConcurrency)));
+    let nextChainIndex = 0;
     const runWorker = async (): Promise<void> => {
       const client = new WorkflowClient();
         this.parallelClients.add(client);
@@ -243,21 +255,27 @@ export class WorkflowClient {
         const snapshotCopy = snapshot.slice(0);
         await client.importSnapshot(snapshotCopy);
         while (true) {
-          const targetIndex = nextIndex++;
-          const request = requests[targetIndex];
-          if (request === undefined) return;
-          const result = await client.calculateTeamTargets([request], (progress) => {
-            onProgress?.({
-              ...progress,
-              targetId: request.id,
-              targetLabel: request.label,
-              targetIndex,
-              targetTotal: requests.length
-            });
-          }, (report) => onReport?.(report));
-          const report = result[0];
-          if (report === undefined) throw new Error(`阵容“${request.label}”没有返回计算结果`);
-          reports[targetIndex] = report;
+          const chain = chains[nextChainIndex++];
+          if (chain === undefined) return;
+          const occupied = new Set<string>();
+          for (const { request, targetIndex } of chain.requests) {
+            const effectiveRequest = request.sceneMutualExclusion === true
+              ? { ...request, occupiedYuhunIds: [...new Set([...(request.occupiedYuhunIds ?? []), ...occupied])] }
+              : request;
+            const result = await client.calculateTeamTargets([effectiveRequest], (progress) => {
+              onProgress?.({
+                ...progress,
+                targetId: request.id,
+                targetLabel: request.label,
+                targetIndex,
+                targetTotal: requests.length
+              });
+            }, (report) => onReport?.(report));
+            const report = result[0];
+            if (report === undefined) throw new Error(`阵容“${request.label}”没有返回计算结果`);
+            reports[targetIndex] = report;
+            for (const id of report.reservedYuhunIds ?? []) occupied.add(id);
+          }
         }
       } finally {
         this.parallelClients.delete(client);

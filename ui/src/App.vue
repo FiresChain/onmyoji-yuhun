@@ -61,7 +61,21 @@ function updateTelemetryConsent(enabled: boolean): void {
 
 function updateTeamCalculationResourceProfile(value: string): void {
   if (!CALCULATION_RESOURCE_PROFILES.some((profile) => profile.id === value)) return;
-  store.setTeamCalculationResourceProfile(value as CalculationResourceProfile);
+  const profile = value as CalculationResourceProfile;
+  store.setTeamCalculationResourceProfile(profile);
+  if (profile === "custom" && store.customTeamCalculationWorkerCount === null) {
+    store.setCustomTeamCalculationWorkerCount(1);
+  }
+}
+
+function updateCustomTeamCalculationWorkerCount(value: string): void {
+  if (value.trim() === "") {
+    store.setCustomTeamCalculationWorkerCount(null);
+    return;
+  }
+  const workerCount = Number(value);
+  if (!Number.isSafeInteger(workerCount) || workerCount < 1 || workerCount > 64) return;
+  store.setCustomTeamCalculationWorkerCount(workerCount);
 }
 
 const operationLabels = {
@@ -131,6 +145,7 @@ function formatAlgorithmParameters(entry: PerformanceRecord): string {
 function resourceAllocationLabel(entry: PerformanceRecord): string | null {
   const allocation = entry.scheduler.resourceAllocation;
   if (allocation === null) return null;
+  if (allocation.source === "custom") return `资源 自定义 ${entry.scheduler.workerCount} Worker`;
   const label = CALCULATION_RESOURCE_PROFILES.find((profile) => profile.id === allocation.profile)?.label ?? allocation.profile;
   const estimate = allocation.estimatedCapacityRatio === null
     ? ""
@@ -269,6 +284,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div><dt>CPU 多核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · ${benchmark.cpuMultiWorkerCount} Worker` }}</dd></div>
               <div><dt>CPU 并行倍率</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuParallelSpeedup.toFixed(2)}×` }}</dd></div>
               <div><dt>阵容计算资源</dt><dd><select :value="store.teamCalculationResourceProfile" :disabled="store.busy !== null" aria-label="阵容计算资源档位" @change="updateTeamCalculationResourceProfile(($event.target as HTMLSelectElement).value)"><option v-for="profile in CALCULATION_RESOURCE_PROFILES" :key="profile.id" :value="profile.id">{{ profile.label }}</option></select></dd></div>
+              <div v-if="store.teamCalculationResourceProfile === 'custom'"><dt>自定义 Worker</dt><dd><input :value="store.customTeamCalculationWorkerCount ?? 1" :disabled="store.busy !== null" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="自定义阵容计算 Worker 数" @change="updateCustomTeamCalculationWorkerCount(($event.target as HTMLInputElement).value)" /></dd></div>
               <div><dt>内存吞吐</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒` }}</dd></div>
               <div><dt>GPU 计算</dt><dd>{{ benchmark === null ? '尚未测试' : benchmark.gpu.status === 'completed' ? `${benchmark.gpu.iterationsPerSecond?.toLocaleString()} f32 迭代/秒` : `${benchmark.gpu.status} · ${benchmark.gpu.reason ?? '无详情'}` }}</dd></div>
               <div><dt>GPU 传输</dt><dd>{{ benchmark?.gpu.status !== 'completed' ? '尚无数据' : `上传 ${benchmark.gpu.uploadMebibytesPerSecond?.toLocaleString() ?? '-'} · 回读 ${benchmark.gpu.readbackMebibytesPerSecond?.toLocaleString() ?? '-'} MiB/秒` }}</dd></div>
