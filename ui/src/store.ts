@@ -49,20 +49,28 @@ import {
   appendPerformanceRecord,
   capturePerformanceDevice,
   clearPerformanceHistory,
+  appendSchedulerDebugEvent,
+  beginSchedulerDebugLog,
+  clearSchedulerDebugLog,
+  getSchedulerDebugLog,
   loadCustomWorkerCount,
   loadCalculationResourceProfile,
   loadPerformanceBenchmark,
   loadPerformanceHistory,
+  loadSchedulerDebugEnabled,
   newPerformanceId,
   saveCalculationResourceProfile,
   saveCustomWorkerCount,
+  saveSchedulerDebugEnabled,
   schedulerInfo,
   type CalculationResourceProfile,
   type PerformanceOperation,
   type PerformanceRecord,
   type PerformanceSchedulerInfo,
   type PerformanceStageTiming,
-  type PerformanceTargetTiming
+  type PerformanceTargetTiming,
+  type SchedulerDebugEvent,
+  type SchedulerDebugLog
 } from "./performance.js";
 import { TEAM_CALCULATION_ALGORITHM_VERSION, TEAM_CALCULATION_SEARCH_DEFAULTS } from "../../src/browser.js";
 import { ensurePerformanceBenchmark } from "./hardware-benchmark.js";
@@ -217,6 +225,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const performanceHistory = ref<readonly PerformanceRecord[]>(loadPerformanceHistory());
   const teamCalculationResourceProfile = ref<CalculationResourceProfile>(loadCalculationResourceProfile());
   const customTeamCalculationWorkerCount = ref<number | null>(loadCustomWorkerCount());
+  const teamCalculationSchedulerDebugEnabled = ref(loadSchedulerDebugEnabled());
+  const teamCalculationSchedulerDebugLog = ref<SchedulerDebugLog | null>(getSchedulerDebugLog());
   const snapshot = ref<SnapshotSummaryDTO | null>(null);
   const analysis = ref<AnalysisSummaryDTO | null>(null);
   const inventory = ref<PageDTO<InventoryRowDTO> | null>(null);
@@ -292,6 +302,29 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   function setCustomTeamCalculationWorkerCount(value: number | null): void {
     customTeamCalculationWorkerCount.value = value;
     saveCustomWorkerCount(value);
+  }
+
+  function setTeamCalculationSchedulerDebugEnabled(enabled: boolean): void {
+    teamCalculationSchedulerDebugEnabled.value = enabled;
+    saveSchedulerDebugEnabled(enabled);
+  }
+
+  function startTeamCalculationSchedulerDebug(requestCount: number, schedule: ReturnType<typeof scheduleTeamCalculation>): ((event: SchedulerDebugEvent) => void) | undefined {
+    if (!teamCalculationSchedulerDebugEnabled.value) return undefined;
+    beginSchedulerDebugLog(teamCalculationResourceProfile.value, schedule.workerCount, requestCount);
+    teamCalculationSchedulerDebugLog.value = getSchedulerDebugLog();
+    const logStartedAt = now();
+    let firstEvent = true;
+    return (event: SchedulerDebugEvent): void => {
+      appendSchedulerDebugEvent({ ...event, atMs: firstEvent ? 0 : Math.max(0, now() - logStartedAt) });
+      firstEvent = false;
+      teamCalculationSchedulerDebugLog.value = getSchedulerDebugLog();
+    };
+  }
+
+  function clearTeamCalculationSchedulerDebugLog(): void {
+    clearSchedulerDebugLog();
+    teamCalculationSchedulerDebugLog.value = null;
   }
 
   function recordPerformance(input: {
@@ -793,7 +826,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       if (enabledTeamTargets.value.length > 0 && teamCalculations.value.length === 0 && (snapshot.value?.heroCount ?? 0) > 0) {
         const teamStartedAt = now();
         const requests = teamCalculationRequests();
-        const schedule = scheduleTeamCalculation(requests);
+        const initialSchedule = scheduleTeamCalculation(requests);
+        const debug = startTeamCalculationSchedulerDebug(requests.length, initialSchedule);
+        const schedule = debug === undefined ? initialSchedule : { ...initialSchedule, debug };
         analysisWorkerCount = schedule.workerCount;
         analysisScheduler = schedulerInfo(schedule.workerCount, schedule.resourceAllocation);
         initializeTeamCalculationProgress(requests);
@@ -975,6 +1010,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const startedAt = now();
     try {
       const initialSchedule = scheduleTeamCalculation(requests);
+      const debug = startTeamCalculationSchedulerDebug(smartMode
+        ? smartGroups.reduce((count, group) => count + group.targets.length, 0)
+        : requests.length, initialSchedule);
+      const initialScheduleWithDebug = debug === undefined ? initialSchedule : { ...initialSchedule, debug };
       const runTargetIds = new Set((smartMode
         ? smartGroups.flatMap((group) => group.targets)
         : manualTargets).map((target) => target.id));
@@ -999,7 +1038,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         void persistSessionNow();
       };
       if (!smartMode) {
-        const result = await client.calculateTeamTargets(requests, onProgress, onReport, initialSchedule);
+        const result = await client.calculateTeamTargets(requests, onProgress, onReport, initialScheduleWithDebug);
         for (const report of result) upsertReport(report);
       } else {
         const nextSmartIndex = (group: SmartTeamTargetGroup): number | null => {
@@ -1034,7 +1073,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
             return teamCalculationRequestFor(target, occupied);
           });
           markTeamCalculationPending(roundRequests);
-          const roundReports = await client.calculateTeamTargets(roundRequests, onProgress, onReport, scheduleTeamCalculation(roundRequests));
+          const roundSchedule = scheduleTeamCalculation(roundRequests);
+          const roundReports = await client.calculateTeamTargets(
+            roundRequests,
+            onProgress,
+            onReport,
+            debug === undefined ? roundSchedule : { ...roundSchedule, debug }
+          );
           for (const report of roundReports) upsertReport(report);
           const next = active.flatMap(({ group }) => {
             const index = nextSmartIndex(group);
@@ -1807,12 +1852,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan, simulation, checklist, mobileHandoff,
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
-    performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount,
+    performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount, teamCalculationSchedulerDebugEnabled, teamCalculationSchedulerDebugLog,
     importSnapshot, loadInventory, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
-    invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount,
+    invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount, setTeamCalculationSchedulerDebugEnabled, clearTeamCalculationSchedulerDebugLog,
     setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets

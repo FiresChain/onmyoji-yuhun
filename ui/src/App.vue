@@ -78,6 +78,10 @@ function updateCustomTeamCalculationWorkerCount(value: string): void {
   store.setCustomTeamCalculationWorkerCount(workerCount);
 }
 
+function updateTeamCalculationSchedulerDebugEnabled(enabled: boolean): void {
+  store.setTeamCalculationSchedulerDebugEnabled(enabled);
+}
+
 const operationLabels = {
   "team-calculation": "阵容计算",
   analysis: "完整分析",
@@ -111,6 +115,25 @@ function exportPerformanceRecords(): void {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = `onmyoji-yuhun-performance-${exportedAt.toISOString().slice(0, 10)}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportTeamCalculationSchedulerDebugLog(): void {
+  const log = store.teamCalculationSchedulerDebugLog;
+  if (log === null || log.events.length === 0) return;
+  const exportedAt = new Date();
+  const payload = {
+    schemaVersion: 1,
+    kind: "onmyoji-yuhun-scheduler-debug-export",
+    exportedAt: exportedAt.toISOString(),
+    benchmark: benchmark.value,
+    log
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `onmyoji-yuhun-scheduler-debug-${exportedAt.toISOString().slice(0, 10)}.json`;
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -256,6 +279,8 @@ async function run(action: () => void | Promise<void>): Promise<void> {
           <div class="performance-dialog-actions">
             <button class="icon-button" title="导出性能记录 JSON" :disabled="benchmark === null && store.performanceHistory.length === 0" @click="exportPerformanceRecords"><Download :size="16" /></button>
             <button class="icon-button" title="清空性能记录" :disabled="store.performanceHistory.length === 0" @click="store.clearPerformanceRecords"><Trash2 :size="16" /></button>
+            <button class="icon-button" title="导出调度调试日志 JSON" :disabled="store.teamCalculationSchedulerDebugLog === null || store.teamCalculationSchedulerDebugLog.events.length === 0" @click="exportTeamCalculationSchedulerDebugLog"><Download :size="16" /></button>
+            <button class="icon-button" title="清空调度调试日志" :disabled="store.teamCalculationSchedulerDebugLog === null" @click="store.clearTeamCalculationSchedulerDebugLog"><Trash2 :size="16" /></button>
             <button class="icon-button" title="关闭" @click="performanceOpen = false"><X :size="18" /></button>
           </div>
         </header>
@@ -284,6 +309,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div><dt>CPU 多核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · ${benchmark.cpuMultiWorkerCount} Worker` }}</dd></div>
               <div><dt>CPU 并行倍率</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuParallelSpeedup.toFixed(2)}×` }}</dd></div>
               <div><dt>阵容计算资源</dt><dd><select :value="store.teamCalculationResourceProfile" :disabled="store.busy !== null" aria-label="阵容计算资源档位" @change="updateTeamCalculationResourceProfile(($event.target as HTMLSelectElement).value)"><option v-for="profile in CALCULATION_RESOURCE_PROFILES" :key="profile.id" :value="profile.id">{{ profile.label }}</option></select></dd></div>
+              <div><dt>调度调试</dt><dd><label class="switch"><input type="checkbox" :checked="store.teamCalculationSchedulerDebugEnabled" :disabled="store.busy !== null" aria-label="记录阵容调度调试日志" @change="updateTeamCalculationSchedulerDebugEnabled(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ store.teamCalculationSchedulerDebugEnabled ? `记录 ${store.teamCalculationSchedulerDebugLog?.events.length ?? 0}` : '关闭' }}</b></label></dd></div>
               <div v-if="store.teamCalculationResourceProfile === 'custom'"><dt>自定义 Worker</dt><dd><input :value="store.customTeamCalculationWorkerCount ?? 1" :disabled="store.busy !== null" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="自定义阵容计算 Worker 数" @change="updateCustomTeamCalculationWorkerCount(($event.target as HTMLInputElement).value)" /></dd></div>
               <div><dt>内存吞吐</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒` }}</dd></div>
               <div><dt>GPU 计算</dt><dd>{{ benchmark === null ? '尚未测试' : benchmark.gpu.status === 'completed' ? `${benchmark.gpu.iterationsPerSecond?.toLocaleString()} f32 迭代/秒` : `${benchmark.gpu.status} · ${benchmark.gpu.reason ?? '无详情'}` }}</dd></div>

@@ -121,6 +121,72 @@ export interface PerformanceSchedulerInfo {
   readonly resourceAllocation: PerformanceResourceAllocation | null;
 }
 
+export type SchedulerDebugEventType = "batch-start" | "worker-start" | "task-queued" | "task-start" | "task-complete" | "mutual-release" | "worker-idle" | "batch-complete";
+
+export interface SchedulerDebugEvent {
+  readonly atMs: number;
+  readonly type: SchedulerDebugEventType;
+  readonly workerId?: number;
+  readonly targetIndex?: number;
+  readonly queueType?: "normal" | "mutual";
+  /** Anonymous ordinal for one mutual-exclusion scene within a run. */
+  readonly sceneGroup?: number | undefined;
+  readonly queueWaitMs?: number;
+  readonly runMs?: number;
+  readonly activeWorkers?: number;
+  readonly normalQueueLength?: number;
+  readonly mutualReadyQueueLength?: number;
+  readonly pendingTaskCount?: number;
+}
+
+export interface SchedulerDebugLog {
+  readonly schemaVersion: 1;
+  readonly kind: "onmyoji-yuhun-scheduler-debug";
+  readonly recordedAt: string;
+  readonly resourceProfile: CalculationResourceProfile;
+  readonly requestedWorkerCount: number;
+  readonly requestCount: number;
+  readonly events: readonly SchedulerDebugEvent[];
+  /** Number of events omitted after reaching the in-memory limit. */
+  readonly droppedEventCount: number;
+}
+
+const SCHEDULER_DEBUG_MAX_EVENTS = 5_000;
+let schedulerDebugLog: SchedulerDebugLog | null = null;
+
+export function beginSchedulerDebugLog(resourceProfile: CalculationResourceProfile, requestedWorkerCount: number, requestCount: number): void {
+  schedulerDebugLog = {
+    schemaVersion: 1,
+    kind: "onmyoji-yuhun-scheduler-debug",
+    recordedAt: new Date().toISOString(),
+    resourceProfile,
+    requestedWorkerCount,
+    requestCount,
+    events: [],
+    droppedEventCount: 0
+  };
+}
+
+export function appendSchedulerDebugEvent(event: SchedulerDebugEvent): void {
+  if (schedulerDebugLog === null) return;
+  schedulerDebugLog = schedulerDebugLog.events.length >= SCHEDULER_DEBUG_MAX_EVENTS
+    ? {
+      ...schedulerDebugLog,
+      events: [...schedulerDebugLog.events.slice(1), event],
+      droppedEventCount: schedulerDebugLog.droppedEventCount + 1
+    }
+    : { ...schedulerDebugLog, events: [...schedulerDebugLog.events, event] };
+  if (typeof console !== "undefined") console.debug("[onmyoji-yuhun][scheduler]", event);
+}
+
+export function getSchedulerDebugLog(): SchedulerDebugLog | null {
+  return schedulerDebugLog;
+}
+
+export function clearSchedulerDebugLog(): void {
+  schedulerDebugLog = null;
+}
+
 export interface PerformanceRecord {
   readonly schemaVersion: 4;
   readonly kind: "onmyoji-yuhun-performance";
@@ -173,6 +239,7 @@ const BENCHMARK_STORAGE_KEY = "onmyoji-yuhun-performance-benchmark-v3";
 const GPU_STORAGE_KEY = "onmyoji-yuhun-performance-gpu-v1";
 const RESOURCE_PROFILE_STORAGE_KEY = "onmyoji-yuhun-calculation-resource-profile-v1";
 const CUSTOM_WORKER_COUNT_STORAGE_KEY = "onmyoji-yuhun-calculation-worker-count-v1";
+const SCHEDULER_DEBUG_STORAGE_KEY = "onmyoji-yuhun-calculation-scheduler-debug-v1";
 const MAX_RECORDS = 50;
 const BENCHMARK_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
@@ -463,6 +530,18 @@ export function saveCustomWorkerCount(workerCount: number | null): void {
     if (workerCount === null) local.removeItem(CUSTOM_WORKER_COUNT_STORAGE_KEY);
     else local.setItem(CUSTOM_WORKER_COUNT_STORAGE_KEY, String(Math.max(1, Math.min(64, Math.floor(workerCount)))));
   } catch { /* best effort */ }
+}
+
+export function loadSchedulerDebugEnabled(): boolean {
+  const local = storage();
+  if (local === null) return false;
+  try { return local.getItem(SCHEDULER_DEBUG_STORAGE_KEY) === "enabled"; } catch { return false; }
+}
+
+export function saveSchedulerDebugEnabled(enabled: boolean): void {
+  const local = storage();
+  if (local === null) return;
+  try { local.setItem(SCHEDULER_DEBUG_STORAGE_KEY, enabled ? "enabled" : "disabled"); } catch { /* best effort */ }
 }
 
 export interface TeamCalculationConcurrency {
