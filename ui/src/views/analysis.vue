@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { Play, RefreshCw } from "@lucide/vue";
 import ExcelColumnFilter, { type ExcelFilterOption, type ExcelFilterValue } from "../components/ExcelColumnFilter.vue";
 import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO } from "../../../src/browser.js";
@@ -7,6 +7,8 @@ import { useWorkbenchStore } from "../store.js";
 
 const store = useWorkbenchStore();
 const yuhunSearch = ref("");
+const actualTeamMetricCount = computed(() => store.teamCalculations.reduce((sum, report) => sum + report.entities.length, 0));
+const actualTeamCalculationCount = computed(() => store.teamCalculations.length);
 
 type YuhunFilterColumn = "suit" | "position" | "star" | "level" | "mainStat" | "subStat" | "disposition" | "reason";
 
@@ -139,7 +141,11 @@ function potentialStrategyTags(row: YuhunDecisionRowDTO): string[] {
 <template>
   <section class="page-heading"><div><span class="eyebrow">03 / ANALYSIS</span><h1>分析结果</h1></div><div class="analysis-actions"><div class="segmented" aria-label="风险档位"><button :class="{ active: store.riskTier === 'tier0' }" @click="store.setRiskTier('tier0')">保守档</button><button :class="{ active: store.riskTier === 'tier1' }" @click="store.setRiskTier('tier1')">常规档</button></div><button class="primary" :disabled="!store.snapshot || !!store.busy" @click="store.runAnalysis"><RefreshCw v-if="store.analysis" :size="17" /><Play v-else :size="17" />{{ store.analysis ? '重新分析' : '运行分析' }}</button></div></section>
 
-  <div v-if="store.enabledTeamTargets.length > 0" class="inline-warning team-calculation-pending">已选入 {{ store.enabledTeamTargets.length }} 条阵容、{{ store.enabledTeamMetricCount }} 个式神指标；分析时会用于判断御魂是否可能提升阵容。</div>
+  <div v-if="store.enabledTeamTargets.length > 0 || actualTeamCalculationCount > 0" class="inline-warning team-calculation-pending">
+    <template v-if="actualTeamCalculationCount > 0">已选入 {{ store.enabledTeamTargets.length }} 条阵容、{{ store.enabledTeamMetricCount }} 个式神指标；本次分析实际使用 {{ actualTeamCalculationCount }} 条阵容、{{ actualTeamMetricCount }} 个式神指标。</template>
+    <template v-else>已选入 {{ store.enabledTeamTargets.length }} 条阵容、{{ store.enabledTeamMetricCount }} 个式神指标；当前没有阵容计算结果，分析不会判断阵容潜力。</template>
+    分析时会用于判断御魂是否可能提升阵容。
+  </div>
   <div v-if="store.enabledPresetRules.length > 0" class="inline-warning team-calculation-pending">已启用 {{ store.enabledPresetRules.length }} 条预置方案规则；命中规则会直接写入单件御魂原因。</div>
 
   <div v-if="!store.analysis" class="empty-state"><Play :size="32" /><strong>等待账号分析</strong><span>导入有效快照后即可运行；规则命中和阵容潜力会写入单件御魂原因。</span></div>

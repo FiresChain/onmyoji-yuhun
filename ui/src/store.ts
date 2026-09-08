@@ -824,7 +824,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const stages: PerformanceStageTiming[] = [];
     let analysisWorkerCount = 1;
     let analysisScheduler = schedulerInfo(1);
-    let performanceReports: readonly TeamCalculationReportDTO[] = [];
+    // Existing team reports may come from a previous smart run. They are still
+    // part of the analysis input until the target configuration is changed.
+    let performanceReports: readonly TeamCalculationReportDTO[] = teamCalculations.value;
     try {
       if (enabledTeamTargets.value.length > 0 && teamCalculations.value.length === 0 && (snapshot.value?.heroCount ?? 0) > 0) {
         const teamStartedAt = now();
@@ -868,8 +870,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       const performanceRecord = recordPerformance({
         operation: "analysis",
         itemCount: snapshot.value?.total ?? null,
-        targetCount: enabledTeamTargets.value.length,
-        metricCount: enabledTeamMetricCount.value,
+        targetCount: performanceReports.length > 0 ? performanceReports.length : enabledTeamTargets.value.length,
+        metricCount: performanceReports.length > 0
+          ? performanceReports.reduce((sum, report) => sum + report.entities.length, 0)
+          : enabledTeamMetricCount.value,
         categoryCount: analysis.value.categoryCount,
         elapsedMs: now() - startedAt,
         stages,
