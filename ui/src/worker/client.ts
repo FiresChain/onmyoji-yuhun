@@ -14,6 +14,7 @@ import type {
   SpeedCategoryDecision,
   TeamCalculationReportDTO,
   TeamCalculationRequest,
+  TeamCalculationWorkEstimate,
   YuhunDecisionFacetsDTO,
   YuhunDecisionQuery,
   YuhunDecisionRowDTO,
@@ -80,6 +81,7 @@ interface ScheduledTeamTask {
   readonly targetIndex: number;
   readonly mutualSceneId: string | null;
   readonly enqueuedAt: number;
+  estimatedWork: number;
 }
 
 interface MutualSceneQueue {
@@ -92,26 +94,24 @@ interface TeamTaskQueues {
   readonly normal: ScheduledTeamTask[];
   readonly mutualByScene: Map<string, MutualSceneQueue>;
   readonly readyMutualSceneIds: string[];
-  preferNormal: boolean;
   nextMutualDebugGroup: number;
 }
 
-function createTeamTaskQueues(requests: readonly TeamCalculationRequest[]): TeamTaskQueues {
+function createTeamTaskQueues(requests: readonly TeamCalculationRequest[], estimates = new Map<string, number>()): TeamTaskQueues {
   const queues: TeamTaskQueues = {
     normal: [],
     mutualByScene: new Map<string, MutualSceneQueue>(),
     readyMutualSceneIds: [],
-    preferNormal: true,
     nextMutualDebugGroup: 0
   };
-  requests.forEach((request, targetIndex) => enqueueTeamTask(queues, request, targetIndex));
+  requests.forEach((request, targetIndex) => enqueueTeamTask(queues, request, targetIndex, estimates.get(request.id) ?? 0));
   queues.readyMutualSceneIds.push(...queues.mutualByScene.keys());
   return queues;
 }
 
-function enqueueTeamTask(queues: TeamTaskQueues, request: TeamCalculationRequest, targetIndex: number): ScheduledTeamTask {
+function enqueueTeamTask(queues: TeamTaskQueues, request: TeamCalculationRequest, targetIndex: number, estimatedWork = 0): ScheduledTeamTask {
   const mutualSceneId = request.sceneMutualExclusion === true && request.sceneId !== undefined ? request.sceneId : null;
-  const task: ScheduledTeamTask = { request, targetIndex, mutualSceneId, enqueuedAt: schedulerNow() };
+  const task: ScheduledTeamTask = { request, targetIndex, mutualSceneId, enqueuedAt: schedulerNow(), estimatedWork };
   if (mutualSceneId === null) {
     queues.normal.push(task);
     return task;
@@ -146,28 +146,52 @@ function initialRunnableTaskCount(requests: readonly TeamCalculationRequest[]): 
 }
 
 function takeNextTeamTask(queues: TeamTaskQueues): ScheduledTeamTask | null {
-  // Alternate between queues while both have work. This preserves FIFO within
-  // each queue without starving a ready mutual-exclusion scene behind a long
-  // list of independent lineups.
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const takeNormal = queues.preferNormal;
-    queues.preferNormal = !queues.preferNormal;
-    if (takeNormal) {
-      const task = queues.normal.shift();
-      if (task !== undefined) return task;
-      continue;
+  // Prefer the largest search estimate so long calculations begin early and
+  // short tasks fill the gaps. Mutual scenes contribute only their FIFO head:
+  // their later lineups remain blocked until occupied yuhun is known.
+  const bestNormal = queues.normal.reduce<ScheduledTeamTask | undefined>((best, task) => (
+    best === undefined || task.estimatedWork > best.estimatedWork ||
+    (task.estimatedWork === best.estimatedWork && task.targetIndex < best.targetIndex) ? task : best
+  ), undefined);
+  let bestMutual: ScheduledTeamTask | undefined;
+  let bestMutualSceneId: string | undefined;
+  for (const sceneId of queues.readyMutualSceneIds) {
+    const task = queues.mutualByScene.get(sceneId)?.tasks[0];
+    if (task !== undefined && (bestMutual === undefined || task.estimatedWork > bestMutual.estimatedWork ||
+      (task.estimatedWork === bestMutual.estimatedWork && task.targetIndex < bestMutual.targetIndex))) {
+      bestMutual = task;
+      bestMutualSceneId = sceneId;
     }
-    const sceneId = queues.readyMutualSceneIds.shift();
-    if (sceneId === undefined) continue;
-    const task = queues.mutualByScene.get(sceneId)?.tasks.shift();
-    if (task !== undefined) return task;
   }
-  return null;
+  if (bestNormal === undefined && bestMutual === undefined) return null;
+  if (bestMutual === undefined || (bestNormal !== undefined && (bestNormal.estimatedWork > bestMutual.estimatedWork ||
+    (bestNormal.estimatedWork === bestMutual.estimatedWork && bestNormal.targetIndex < bestMutual.targetIndex)))) {
+    queues.normal.splice(queues.normal.indexOf(bestNormal!), 1);
+    return bestNormal!;
+  }
+  queues.readyMutualSceneIds.splice(queues.readyMutualSceneIds.indexOf(bestMutualSceneId!), 1);
+  return queues.mutualByScene.get(bestMutualSceneId!)!.tasks.shift()!;
 }
 
 function releaseMutualScene(queues: TeamTaskQueues, sceneId: string): void {
   const queue = queues.mutualByScene.get(sceneId);
   if (queue !== undefined && queue.tasks.length > 0 && !queues.readyMutualSceneIds.includes(sceneId)) queues.readyMutualSceneIds.push(sceneId);
+}
+
+async function refreshMutualQueueHeadEstimate(
+  client: WorkflowClient,
+  queue: MutualSceneQueue
+): Promise<{ readonly task: ScheduledTeamTask; readonly previousEstimatedWork: number } | null> {
+  const next = queue.tasks[0];
+  if (next === undefined) return null;
+  const previousEstimatedWork = next.estimatedWork;
+  const effectiveRequest: TeamCalculationRequest = {
+    ...next.request,
+    occupiedYuhunIds: [...new Set([...(next.request.occupiedYuhunIds ?? []), ...queue.occupiedYuhunIds])]
+  };
+  const estimate = (await client.estimateTeamCalculationWork([effectiveRequest]))[0];
+  if (estimate !== undefined) next.estimatedWork = estimate.estimatedWork;
+  return { task: next, previousEstimatedWork };
 }
 
 interface PendingRequest<T> {
@@ -313,6 +337,10 @@ export class WorkflowClient {
     return this.call("buildImportChecklist");
   }
 
+  estimateTeamCalculationWork(requests: readonly TeamCalculationRequest[]): Promise<readonly TeamCalculationWorkEstimate[]> {
+    return this.call("estimateTeamCalculationWork", [requests]);
+  }
+
   async calculateTeamTargets(
     requests: readonly TeamCalculationRequest[],
     onProgress?: (progress: WorkerProgress) => void,
@@ -375,7 +403,9 @@ export class WorkflowClient {
     const debugStartedAt = schedulerNow();
     const atMs = (timestamp = schedulerNow()): number => Math.max(0, timestamp - debugStartedAt);
     const reports: TeamCalculationReportDTO[] = [];
-    const queues = createTeamTaskQueues(initialRequests);
+    const initialEstimates = await this.estimateTeamCalculationWork(initialRequests);
+    const estimateByRequestId = new Map(initialEstimates.map((estimate) => [estimate.requestId, estimate.estimatedWork]));
+    const queues = createTeamTaskQueues(initialRequests, estimateByRequestId);
     const concurrency = Math.min(
       Math.max(1, queues.normal.length + queues.readyMutualSceneIds.length),
       requestedConcurrency
@@ -394,6 +424,7 @@ export class WorkflowClient {
         targetIndex: task.targetIndex,
         queueType: task.mutualSceneId === null ? "normal" : "mutual",
         sceneGroup: mutualQueue?.debugGroup,
+        estimatedWork: task.estimatedWork,
         ...queueState()
       });
     };
@@ -443,6 +474,7 @@ export class WorkflowClient {
             targetIndex,
             queueType: mutualSceneId === null ? "normal" : "mutual",
             sceneGroup: mutualQueue?.debugGroup,
+            estimatedWork: task.estimatedWork,
             queueWaitMs: Math.max(0, startedAt - task.enqueuedAt),
             ...queueState()
           });
@@ -474,6 +506,7 @@ export class WorkflowClient {
               targetIndex,
               queueType: mutualSceneId === null ? "normal" : "mutual",
               sceneGroup: mutualQueue?.debugGroup,
+              estimatedWork: task.estimatedWork,
               runMs: Math.max(0, completedAt - startedAt),
               ...queueState()
             });
@@ -484,9 +517,27 @@ export class WorkflowClient {
 
             const runnableBefore = runnableTaskCount();
             const followUps = nextRequests(request, report);
-            for (const followUp of followUps) emitQueued(enqueueTeamTask(queues, followUp, nextTargetIndex++), completedAt);
+            const followUpEstimates = followUps.length === 0 ? [] : await this.estimateTeamCalculationWork(followUps);
+            for (const [index, followUp] of followUps.entries()) {
+              const estimate = followUpEstimates[index]?.estimatedWork ?? 0;
+              emitQueued(enqueueTeamTask(queues, followUp, nextTargetIndex++, estimate), completedAt);
+            }
             let mutualReleased = false;
             if (mutualSceneId !== null) {
+              if (mutualQueue !== undefined) {
+                const refreshed = await refreshMutualQueueHeadEstimate(client, mutualQueue);
+                if (refreshed !== null && refreshed.previousEstimatedWork !== refreshed.task.estimatedWork) {
+                  debug?.({
+                    atMs: atMs(),
+                    type: "task-reestimated",
+                    targetIndex: refreshed.task.targetIndex,
+                    queueType: "mutual",
+                    sceneGroup: mutualQueue.debugGroup,
+                    estimatedWork: refreshed.task.estimatedWork,
+                    ...queueState()
+                  });
+                }
+              }
               const wasReady = queues.readyMutualSceneIds.includes(mutualSceneId);
               releaseMutualScene(queues, mutualSceneId);
               mutualReleased = !wasReady && queues.readyMutualSceneIds.includes(mutualSceneId);
@@ -645,15 +696,16 @@ export class WorkflowClient {
     const snapshot = this.snapshotBuffer;
     if (snapshot === null) return this.call("calculateTeamTargets", [requests], [], onProgress, onReport);
 
-    // Independent lineups use a FIFO queue. Each mutual-exclusion scene has
-    // its own FIFO queue and only releases its next lineup after the previous
-    // report has contributed occupied pieces. An idle Worker can therefore
-    // keep taking unrelated work instead of owning a whole scene chain.
+    // Independent lineups use a workload-priority queue. Each mutual-exclusion
+    // scene contributes only its FIFO head and releases the next lineup after
+    // the previous report has contributed occupied pieces.
     const debug = schedule?.debug;
     const debugStartedAt = schedulerNow();
     const atMs = (timestamp = schedulerNow()): number => Math.max(0, timestamp - debugStartedAt);
     const reports = new Array<TeamCalculationReportDTO>(requests.length);
-    const queues = createTeamTaskQueues(requests);
+    const estimates = await this.estimateTeamCalculationWork(requests);
+    const estimateByRequestId = new Map(estimates.map((estimate) => [estimate.requestId, estimate.estimatedWork]));
+    const queues = createTeamTaskQueues(requests, estimateByRequestId);
     const concurrency = Math.min(
       Math.max(1, queues.normal.length + queues.readyMutualSceneIds.length),
       Math.max(1, Math.floor(requestedConcurrency))
@@ -670,6 +722,7 @@ export class WorkflowClient {
         targetIndex: task.targetIndex,
         queueType: task.mutualSceneId === null ? "normal" : "mutual",
         sceneGroup: task.mutualSceneId === null ? undefined : queues.mutualByScene.get(task.mutualSceneId)?.debugGroup,
+        estimatedWork: task.estimatedWork,
         ...debugQueueState(queues, 0)
       });
     }
@@ -699,6 +752,7 @@ export class WorkflowClient {
             targetIndex,
             queueType: mutualSceneId === null ? "normal" : "mutual",
             sceneGroup: mutualQueue?.debugGroup,
+            estimatedWork: task.estimatedWork,
             queueWaitMs: Math.max(0, startedAt - queuedAt),
             ...debugQueueState(queues, activeWorkers)
           });
@@ -730,11 +784,24 @@ export class WorkflowClient {
               targetIndex,
               queueType: mutualSceneId === null ? "normal" : "mutual",
               sceneGroup: mutualQueue?.debugGroup,
+              estimatedWork: task.estimatedWork,
               runMs: Math.max(0, completedAt - startedAt),
               ...debugQueueState(queues, activeWorkers)
             });
             if (mutualQueue !== undefined && mutualSceneId !== null) {
               for (const id of report.reservedYuhunIds ?? []) mutualQueue.occupiedYuhunIds.add(id);
+              const refreshed = await refreshMutualQueueHeadEstimate(client, mutualQueue);
+              if (refreshed !== null && refreshed.previousEstimatedWork !== refreshed.task.estimatedWork) {
+                debug?.({
+                  atMs: atMs(),
+                  type: "task-reestimated",
+                  targetIndex: refreshed.task.targetIndex,
+                  queueType: "mutual",
+                  sceneGroup: mutualQueue.debugGroup,
+                  estimatedWork: refreshed.task.estimatedWork,
+                  ...debugQueueState(queues, activeWorkers)
+                });
+              }
               const releasedNextTask = mutualQueue.tasks.length > 0;
               releaseMutualScene(queues, mutualSceneId);
               if (releasedNextTask) {

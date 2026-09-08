@@ -20,6 +20,7 @@ import type { SnapshotHeroBase, YyxYuhun } from "./yyx.js";
 import {
   enumerateMaximumUpgradeStates,
   initialSubStatsForComparison,
+  remainingUpgradeRolls,
   type YuhunPotentialStrategy
 } from "./yuhun-potential.js";
 
@@ -104,6 +105,18 @@ export interface TeamCalculationRequest {
   readonly sceneMutualExclusion?: boolean;
   /** Occupied yuhun IDs from earlier calculations in the same scene. */
   readonly occupiedYuhunIds?: readonly string[];
+}
+
+/**
+ * A search-free workload estimate used only to order independent lineups.
+ * It deliberately contains no inventory IDs or result data.
+ */
+export interface TeamCalculationWorkEstimate {
+  readonly requestId: string;
+  readonly activeEntityCount: number;
+  readonly candidateCount: number;
+  readonly candidateCombinations: number;
+  readonly estimatedWork: number;
 }
 
 export interface TeamCalculationProgress {
@@ -455,6 +468,149 @@ function potentialCandidateAllowed(
   return true;
 }
 
+const TEAM_METRIC_WORK_FACTORS: Readonly<Record<TeamMetricId, number>> = {
+  1: 2.4,
+  2: 1.2,
+  3: 1.2,
+  4: 0.9,
+  5: 1,
+  6: 1,
+  7: 0.8,
+  8: 1,
+  9: 1.5,
+  10: 2,
+  11: 1.8,
+  12: 2.2
+};
+
+const WORK_ESTIMATE_MAX = 1e15;
+const WORK_ESTIMATE_SUBSTAT_COUNT = Object.keys(SUB_STAT_MAX_ROLLS).length;
+
+function requiredSetFilterForTarget(target: CalculationTarget): {
+  readonly requiredNames: ReadonlySet<string>;
+  readonly requiredSetsFillAllSlots: boolean;
+} {
+  const requiredNames = new Set(target.includedSetGroups.flatMap((group) => group.names));
+  const groupsAreDisjoint = target.includedSetGroups.every((group) => group.intrinsicStat === undefined) && target.includedSetGroups.every((group, index) =>
+    target.includedSetGroups.slice(index + 1).every((other) => group.names.every((name) => !other.names.includes(name)))
+  );
+  return {
+    requiredNames,
+    requiredSetsFillAllSlots: groupsAreDisjoint && target.includedSetGroups.reduce((total, group) => total + group.count, 0) >= 6
+  };
+}
+
+function candidateFilterForTarget(
+  target: CalculationTarget,
+  items: readonly YyxYuhun[],
+  usedYuhunIds: ReadonlySet<string>
+): YyxYuhun[] {
+  const { requiredNames, requiredSetsFillAllSlots } = requiredSetFilterForTarget(target);
+  return items.filter((item) => {
+    if (usedYuhunIds.has(item.id)) return false;
+    if (target.sixStarOnly && item.star !== 6) return false;
+    if (target.maxLevelOnly && item.level !== 15) return false;
+    if (target.unequippedOnly && item.equipped) return false;
+    if (target.excludedSuitNames.has(item.name)) return false;
+    if (requiredSetsFillAllSlots && !requiredNames.has(item.name)) return false;
+    if (item.position === 2 || item.position === 4 || item.position === 6) {
+      const allowed = target.mainStats[item.position];
+      if (allowed !== undefined && !allowed.includes(item.mainStat)) return false;
+    }
+    return true;
+  });
+}
+
+function boundedProduct(values: readonly number[]): number {
+  let result = 1;
+  for (const value of values) {
+    result *= value;
+    if (result >= WORK_ESTIMATE_MAX) return WORK_ESTIMATE_MAX;
+  }
+  return result;
+}
+
+function boundedBinomial(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  const smaller = Math.min(k, n - k);
+  let result = 1;
+  for (let index = 1; index <= smaller; index += 1) {
+    result = result * (n - smaller + index) / index;
+    if (result >= WORK_ESTIMATE_MAX) return WORK_ESTIMATE_MAX;
+  }
+  return result;
+}
+
+/**
+ * Matches the cardinality of the deterministic upgrade-state search without
+ * constructing its state objects. Low-level pieces can dominate runtime even
+ * when the six-piece combination search itself is small.
+ */
+function estimatedUpgradeStateCount(item: Pick<YyxYuhun, "level" | "subStats">): number {
+  const rolls = remainingUpgradeRolls(item.level);
+  if (rolls === 0) return 1;
+  const initialStatCount = Math.min(4, Object.keys(item.subStats).length);
+  if (initialStatCount === 0) {
+    return Array.from({ length: Math.min(4, rolls) }, (_, index) => {
+      const addedStatCount = index + 1;
+      return boundedBinomial(WORK_ESTIMATE_SUBSTAT_COUNT, addedStatCount)
+        * boundedBinomial(rolls - 1, addedStatCount - 1);
+    }).reduce((total, count) => Math.min(WORK_ESTIMATE_MAX, total + count), 0);
+  }
+  const maximumNewStats = Math.min(4 - initialStatCount, rolls);
+  return Array.from({ length: maximumNewStats + 1 }, (_, addedStatCount) => (
+    boundedBinomial(WORK_ESTIMATE_SUBSTAT_COUNT - initialStatCount, addedStatCount)
+      * boundedBinomial(rolls + initialStatCount - 1, initialStatCount + addedStatCount - 1)
+  )).reduce((total, count) => Math.min(WORK_ESTIMATE_MAX, total + count), 0);
+}
+
+function estimatePotentialEvaluationWork(
+  target: CalculationTarget,
+  items: readonly YyxYuhun[],
+  usedYuhunIds: ReadonlySet<string>
+): number {
+  const { requiredNames, requiredSetsFillAllSlots } = requiredSetFilterForTarget(target);
+  return items.reduce((total, item) => {
+    if (item.level >= 15 || !potentialCandidateAllowed(target, item, usedYuhunIds, requiredSetsFillAllSlots, requiredNames)) return total;
+    // One embryo comparison plus one pass per possible upgrade state.
+    return Math.min(WORK_ESTIMATE_MAX, total + 1 + estimatedUpgradeStateCount(item));
+  }, 0);
+}
+
+/** Estimate one request without running its combination search. */
+export function estimateTeamCalculationWork(
+  request: TeamCalculationRequest,
+  items: readonly YyxYuhun[]
+): TeamCalculationWorkEstimate {
+  const activeTargets = request.manualTargets
+    .filter((input) => input.yuhunConfigEnabled !== false)
+    .map(targetFromManual)
+    .filter((target) => target.unsupportedReasons.length === 0);
+  let candidateCount = 0;
+  let candidateCombinations = 0;
+  let estimatedWork = 0;
+  const usedYuhunIds = new Set(request.occupiedYuhunIds ?? []);
+  for (const target of activeTargets) {
+    const candidates = candidateFilterForTarget(target, items, usedYuhunIds);
+    const byPosition = Array.from({ length: 6 }, (_, index) => candidates.filter((item) => item.position === index + 1));
+    const combinations = boundedProduct(byPosition.map((position) => position.length));
+    candidateCount += candidates.length;
+    candidateCombinations = Math.min(WORK_ESTIMATE_MAX, candidateCombinations + combinations);
+    const searchNodes = combinations <= TEAM_CALCULATION_SEARCH_DEFAULTS.maxCombinations
+      ? combinations
+      : TEAM_CALCULATION_SEARCH_DEFAULTS.beamWidth * byPosition.reduce((sum, position) => sum + position.length, 0);
+    const potentialWork = estimatePotentialEvaluationWork(target, items, usedYuhunIds);
+    estimatedWork += (candidates.length + searchNodes + potentialWork) * (TEAM_METRIC_WORK_FACTORS[target.metricId as TeamMetricId] ?? 1);
+  }
+  return {
+    requestId: request.id,
+    activeEntityCount: activeTargets.length,
+    candidateCount,
+    candidateCombinations,
+    estimatedWork: Math.min(WORK_ESTIMATE_MAX, estimatedWork)
+  };
+}
+
 function matchesRequiredSetGroups(
   yuhun: readonly Yuhun[],
   groups: readonly IncludedSetGroup[]
@@ -606,25 +762,7 @@ function calculateTarget(
   for (const [stat, bound] of Object.entries(dynamicBounds) as Array<[PanelStatId, DynamicUpperBound]>) {
     effectiveConstraints[stat] = { ...effectiveConstraints[stat], max: undefined, maxExclusive: bound.value };
   }
-  const requiredNames = new Set(target.includedSetGroups.flatMap((group) => group.names));
-  const groupsAreDisjoint = target.includedSetGroups.every((group) => group.intrinsicStat === undefined) && target.includedSetGroups.every((group, index) =>
-    target.includedSetGroups.slice(index + 1).every((other) => group.names.every((name) => !other.names.includes(name)))
-  );
-  const requiredSetsFillAllSlots = groupsAreDisjoint &&
-    target.includedSetGroups.reduce((total, group) => total + group.count, 0) >= 6;
-  const candidates = items.filter((item) => {
-    if (usedYuhunIds.has(item.id)) return false;
-    if (target.sixStarOnly && item.star !== 6) return false;
-    if (target.maxLevelOnly && item.level !== 15) return false;
-    if (target.unequippedOnly && item.equipped) return false;
-    if (target.excludedSuitNames.has(item.name)) return false;
-    if (requiredSetsFillAllSlots && !requiredNames.has(item.name)) return false;
-    if (item.position === 2 || item.position === 4 || item.position === 6) {
-      const allowed = target.mainStats[item.position];
-      if (allowed !== undefined && !allowed.includes(item.mainStat)) return false;
-    }
-    return true;
-  });
+  const candidates = candidateFilterForTarget(target, items, usedYuhunIds);
   const candidateCount = candidates.length;
   const filterElapsedMs = Math.max(0, now() - startedAt);
   const searchStartedAt = now();
@@ -677,6 +815,7 @@ function calculateTarget(
     }
   }
   const potentialStartedAt = now();
+  const { requiredNames, requiredSetsFillAllSlots } = requiredSetFilterForTarget(target);
   for (const evidence of calculatePotentialEvidence(
     target,
     items,

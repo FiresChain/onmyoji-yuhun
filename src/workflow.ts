@@ -16,6 +16,7 @@ import {
 import { simulateSpeedValidation, type SpeedValidationReport } from "./simulate.js";
 import {
   calculateTeamTargetBatch,
+  estimateTeamCalculationWork,
   type ManualShikigamiCalculationInput,
   type TeamCalculationProgress,
   type TeamCalculationReportDTO,
@@ -790,6 +791,14 @@ export class YuhunWorkflow {
     } catch (error) {
       return sanitizeError("targets", error);
     }
+  }
+
+  estimateTeamCalculationWork(requests: readonly TeamCalculationRequest[]) {
+    if (this.items === null) workflowFailure("snapshot", "SNAPSHOT_REQUIRED", "请先导入游戏快照");
+    if (!Array.isArray(requests) || requests.length === 0) {
+      workflowFailure("targets", "NO_TEAM_TARGET", "至少启用一个阵容或手动搭配目标", "requests");
+    }
+    return requests.map((request) => estimateTeamCalculationWork(request, this.items!));
   }
 
   getGateState(): Readonly<Record<string, boolean>> {

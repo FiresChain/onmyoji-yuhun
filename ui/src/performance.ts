@@ -121,7 +121,7 @@ export interface PerformanceSchedulerInfo {
   readonly resourceAllocation: PerformanceResourceAllocation | null;
 }
 
-export type SchedulerDebugEventType = "batch-start" | "worker-start" | "task-queued" | "task-start" | "task-complete" | "mutual-release" | "worker-idle" | "batch-complete";
+export type SchedulerDebugEventType = "batch-start" | "worker-start" | "task-queued" | "task-reestimated" | "task-start" | "task-complete" | "mutual-release" | "worker-idle" | "batch-complete";
 
 export interface SchedulerDebugEvent {
   readonly atMs: number;
@@ -133,6 +133,7 @@ export interface SchedulerDebugEvent {
   readonly sceneGroup?: number | undefined;
   readonly queueWaitMs?: number;
   readonly runMs?: number;
+  readonly estimatedWork?: number;
   readonly activeWorkers?: number;
   readonly normalQueueLength?: number;
   readonly mutualReadyQueueLength?: number;

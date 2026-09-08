@@ -17,6 +17,7 @@ type Method =
   | "runSimulation"
   | "buildImportChecklist"
   | "calculateTeamTargets"
+  | "estimateTeamCalculationWork"
   | "getGateState"
   | "resetSession";
 
@@ -94,6 +95,10 @@ async function dispatch(message: RequestMessage): Promise<unknown> {
         message.args[0] as Parameters<typeof workflow.calculateTeamTargets>[0],
         (progress) => post(message.id, { progress }),
         (report) => post(message.id, { report })
+      );
+    case "estimateTeamCalculationWork":
+      return workflow.estimateTeamCalculationWork(
+        message.args[0] as Parameters<typeof workflow.estimateTeamCalculationWork>[0]
       );
     case "getGateState":
       return workflow.getGateState();

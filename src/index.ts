@@ -106,7 +106,8 @@ export {
   TEAM_CALCULATION_ALGORITHM_VERSION,
   TEAM_CALCULATION_SEARCH_DEFAULTS,
   calculateTeamTargetBatch,
-  calculateTeamTargets
+  calculateTeamTargets,
+  estimateTeamCalculationWork
 } from "./team-calculation.js";
 export {
   enumerateMaximumUpgradeStates,
@@ -164,6 +165,7 @@ export type {
   TeamCalculationProgress,
   TeamCalculationReportDTO,
   TeamCalculationRequest,
+  TeamCalculationWorkEstimate,
   TeamCalculationStatus,
   TeamMetricId
 } from "./team-calculation.js";
