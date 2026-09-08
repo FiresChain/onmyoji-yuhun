@@ -11,6 +11,7 @@ import {
   ClipboardPaste,
   Edit3,
   Eye,
+  GitCompareArrows,
   FolderTree,
   GripVertical,
   ImageUp,
@@ -42,6 +43,9 @@ import {
   type SubStatCount,
   type SubStatRequirement,
   type TeamCalculationEntityDTO,
+  type TeamCalculationPieceDTO,
+  type YuhunPotentialPieceDTO,
+  type YuhunPotentialTarget,
   type TeamCodeInspectionDTO
 } from "../../../src/browser.js";
 import {
@@ -65,6 +69,7 @@ import {
 import { copyText } from "../persistence.js";
 import { formatTeamCalculationError } from "../team-calculation-errors.js";
 import ManualTargetEditor from "../components/ManualTargetEditor.vue";
+import PotentialComparison from "../components/PotentialComparison.vue";
 import {
   YUHUN_CATEGORY_OPTIONS,
   shikigamiByHeroId,
@@ -134,6 +139,8 @@ const smartDifficultyDecreaseCount = ref<"auto" | number>("auto");
 const smartHelpOpen = ref(false);
 const teamCalculationFilter = ref<"all" | "enabled" | "disabled" | "completed" | "running" | "pending" | "error">("all");
 const teamProgressCarouselIndex = ref(0);
+const potentialComparisonTargets = ref<readonly YuhunPotentialTarget[] | null>(null);
+const potentialComparisonTitle = ref("");
 let teamProgressRotationTimer: ReturnType<typeof setInterval> | null = null;
 
 const importOpen = ref(false);
@@ -1425,6 +1432,57 @@ function calculationSuitSummary(entity: TeamCalculationEntityDTO): string {
   return completedSets.join(" + ") || "散件";
 }
 
+function potentialComparisonPiece(item: TeamCalculationPieceDTO | null): YuhunPotentialPieceDTO | null {
+  if (item === null) return null;
+  return {
+    position: item.position,
+    suit: item.suit,
+    mainStat: item.mainStat,
+    mainStatLabel: item.mainStatLabel,
+    ...(item.mainValue === undefined ? {} : { mainValue: item.mainValue }),
+    level: item.level,
+    star: item.star,
+    ...(item.subStats === undefined ? {} : { subStats: item.subStats }),
+    ...(item.intrinsicStats === undefined ? {} : { intrinsicStats: item.intrinsicStats })
+  };
+}
+
+function openEntityPotentialComparison(target: ImportedTeamTarget, entity: TeamCalculationEntityDTO): void {
+  const evidence = entity.potentialEvidence ?? (entity.potentialYuhunIds ?? []).map((yuhunId) => ({
+    yuhunId,
+    strategy: "candidate-build" as const,
+    position: 0,
+    referenceSuit: null,
+    referenceYuhunId: null,
+    referenceLevel: null,
+    statesEvaluated: 0,
+    upperScore: null,
+    baselineScore: entity.score,
+    exactEmbryo: false
+  }));
+  if (evidence.length === 0) return;
+  const byId = new Map((entity.potentialYuhunDetails ?? []).map((item) => [item.yuhunId, item]));
+  potentialComparisonTargets.value = evidence.map((entry) => ({
+    position: entry.position,
+    teamLabel: target.label,
+    shikigamiName: entity.shikigamiName,
+    metricName: entity.metricName,
+    score: entity.score,
+    strategy: entry.strategy,
+    statesEvaluated: entry.statesEvaluated,
+    referenceSuit: entry.referenceSuit,
+    referenceLevel: entry.referenceLevel,
+    exactEmbryo: entry.exactEmbryo,
+    candidate: potentialComparisonPiece(byId.get(entry.yuhunId) ?? null),
+    reference: entry.strategy === "candidate-build"
+      ? null
+      : potentialComparisonPiece(entity.pieces.find((piece) => piece.yuhunId === (entry.referenceYuhunId ?? "") || piece.position === entry.position) ?? null),
+    upperScore: entry.upperScore,
+    baselineScore: entry.baselineScore
+  }));
+  potentialComparisonTitle.value = `${entity.shikigamiName} · ${entity.metricName} · 潜力御魂`;
+}
+
 async function copyTeamCalculationError(target: ImportedTeamTarget): Promise<void> {
   const report = store.teamCalculationFor(target.id);
   if (report === null) return;
@@ -2004,6 +2062,7 @@ function ruleSummary(rule: PresetRule): string {
                             <div class="calculation-score"><span>{{ entity.metricName }}</span><strong>{{ calculationScore(entity) }}</strong><small>{{ calculationSuitSummary(entity) }}</small></div>
                             <div class="calculation-panel"><span v-for="stat in panelStatEntries(entity.panel)" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
                             <div class="calculation-pieces"><span v-for="piece in entity.pieces" :key="piece.position"><small>{{ piece.position }}号 · {{ piece.mainStatLabel }}</small><strong>{{ piece.suit }}</strong></span></div>
+                            <button v-if="(entity.potentialEvidence?.length ?? entity.potentialYuhunIds?.length ?? 0) > 0" class="potential-entity-open" @click.stop="openEntityPotentialComparison(target, entity)"><GitCompareArrows :size="14" />查看哪些御魂可以提升</button>
                           </div>
                           <p v-else>{{ entity.message }}</p>
                           <details v-if="entity.constraints.length > 0"><summary>约束 {{ entity.constraints.length }} 项</summary><span>{{ entity.constraints.join(' · ') }}</span></details>
@@ -2415,4 +2474,5 @@ function ruleSummary(rule: PresetRule): string {
       <footer><span>已选择 {{ ruleSuits.length }} 个御魂套装</span><button class="primary" @click="ruleYuhunPickerOpen = false">完成</button></footer>
     </section>
   </div>
+  <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
 </template>

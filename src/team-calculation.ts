@@ -137,12 +137,30 @@ export interface TeamCalculationProgress {
 }
 
 export interface TeamCalculationPieceDTO {
+  readonly yuhunId?: string;
   readonly position: number;
   readonly suit: string;
   readonly mainStat: StatId;
   readonly mainStatLabel: string;
+  readonly mainValue?: number;
   readonly level: number;
   readonly star: number;
+  readonly subStats?: readonly { readonly stat: StatId; readonly value: number }[];
+  readonly intrinsicStats?: readonly { readonly stat: StatId; readonly value: number }[];
+}
+
+/** Safe, display-only inventory data used by potential-yuhun drill-downs. */
+export interface TeamCalculationYuhunDTO {
+  readonly yuhunId: string;
+  readonly position: number;
+  readonly suit: string;
+  readonly mainStat: StatId;
+  readonly mainStatLabel: string;
+  readonly mainValue: number;
+  readonly level: number;
+  readonly star: number;
+  readonly subStats: readonly { readonly stat: StatId; readonly value: number }[];
+  readonly intrinsicStats: readonly { readonly stat: StatId; readonly value: number }[];
 }
 
 export interface TeamCalculationPotentialEvidenceDTO {
@@ -150,6 +168,7 @@ export interface TeamCalculationPotentialEvidenceDTO {
   readonly strategy: YuhunPotentialStrategy;
   readonly position: number;
   readonly referenceSuit: string | null;
+  readonly referenceYuhunId?: string | null;
   readonly referenceLevel: number | null;
   readonly statesEvaluated: number;
   readonly upperScore: number | null;
@@ -181,6 +200,7 @@ export interface TeamCalculationEntityDTO {
   }[];
   /** IDs are kept inside the worker-facing report and used to mark useful inventory rows. */
   readonly potentialYuhunIds?: readonly string[];
+  readonly potentialYuhunDetails?: readonly TeamCalculationYuhunDTO[];
   readonly potentialEvidence?: readonly TeamCalculationPotentialEvidenceDTO[];
   readonly constraints: readonly string[];
   readonly targetScoreRaw: unknown;
@@ -410,6 +430,7 @@ function emptyResult(
     candidateCombinations: 0,
     evaluatedCombinations: 0,
     potentialYuhunIds: [],
+    potentialYuhunDetails: [],
     potentialEvidence: [],
     constraints: constraintDescriptions(target, dynamicBounds),
     targetScoreRaw: target.targetScoreRaw
@@ -690,6 +711,7 @@ function calculatePotentialEvidence(
           strategy: "embryo-comparison",
           position: candidate.position,
           referenceSuit: reference.name,
+          referenceYuhunId: reference.id,
           referenceLevel: reference.level,
           statesEvaluated: 0,
           upperScore: candidateScore,
@@ -725,6 +747,7 @@ function calculatePotentialEvidence(
         strategy: "upgrade-upper-bound",
         position: candidate.position,
         referenceSuit: reference.name,
+        referenceYuhunId: reference.id,
         referenceLevel: reference.level,
         statesEvaluated: states.length,
         upperScore: bestUpperScore,
@@ -807,6 +830,7 @@ function calculateTarget(
         position: item.position,
         referenceSuit: null,
         referenceLevel: null,
+        referenceYuhunId: null,
         statesEvaluated: 0,
         upperScore: result.score,
         baselineScore: best.score,
@@ -831,6 +855,18 @@ function calculateTarget(
   const potentialElapsedMs = Math.max(0, now() - potentialStartedAt);
   const potentialEvidence = [...potentialEvidenceMap.values()];
   const potentialYuhunIds = [...new Set(potentialEvidence.map((entry) => entry.yuhunId))];
+  const itemDTO = (item: YyxYuhun): TeamCalculationYuhunDTO => ({
+    yuhunId: item.id,
+    position: item.position,
+    suit: item.name,
+    mainStat: item.mainStat,
+    mainStatLabel: STAT_LABELS[item.mainStat],
+    mainValue: item.mainValue,
+    level: item.level,
+    star: item.star,
+    subStats: Object.entries(item.subStats).map(([stat, value]) => ({ stat: stat as StatId, value: value as number })),
+    intrinsicStats: Object.entries(item.intrinsicStats).map(([stat, value]) => ({ stat: stat as StatId, value: value as number }))
+  });
   return withElapsed({
     result: {
       entityIndex: target.entityIndex,
@@ -843,12 +879,16 @@ function calculateTarget(
       score: best.score,
       panel: best.panel,
       pieces: best.yuhun.map((item) => ({
+        yuhunId: item.id,
         position: item.position,
         suit: item.name,
         mainStat: item.mainStat,
         mainStatLabel: STAT_LABELS[item.mainStat],
+        mainValue: item.mainValue,
         level: item.level,
-        star: item.star
+        star: item.star,
+        subStats: Object.entries(item.subStats).map(([stat, value]) => ({ stat: stat as StatId, value: value as number })),
+        intrinsicStats: Object.entries(item.intrinsicStats).map(([stat, value]) => ({ stat: stat as StatId, value: value as number }))
       })),
       exact: search.exact,
       candidateCount,
@@ -860,6 +900,7 @@ function calculateTarget(
         { id: "potential-evaluation", elapsedMs: potentialElapsedMs }
       ],
       potentialYuhunIds,
+      potentialYuhunDetails: potentialYuhunIds.map((id) => items.find((item) => item.id === id)).filter((item): item is YyxYuhun => item !== undefined).map(itemDTO),
       potentialEvidence,
       constraints: constraintDescriptions(target, dynamicBounds),
       targetScoreRaw: target.targetScoreRaw

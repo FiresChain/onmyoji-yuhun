@@ -1,7 +1,7 @@
 import { speedDecisionCategoryKey, type SpeedCategoryDecision } from "./decision.js";
 import { matchFilterShare } from "./matcher.js";
 import type { FilterCriteria, StatId, YuhunFilterShare } from "./types.js";
-import type { TeamCalculationReportDTO } from "./team-calculation.js";
+import type { TeamCalculationPieceDTO, TeamCalculationReportDTO, TeamCalculationYuhunDTO } from "./team-calculation.js";
 import type { YyxYuhun } from "./yyx.js";
 import type { YuhunPotentialStrategy } from "./yuhun-potential.js";
 
@@ -15,6 +15,7 @@ export interface AnalysisRuleInput {
 }
 
 export interface YuhunPotentialTarget {
+  readonly position: number;
   readonly teamLabel: string;
   readonly shikigamiName: string;
   readonly metricName: string;
@@ -24,6 +25,23 @@ export interface YuhunPotentialTarget {
   readonly referenceSuit: string | null;
   readonly referenceLevel: number | null;
   readonly exactEmbryo: boolean;
+  readonly candidate: YuhunPotentialPieceDTO | null;
+  readonly reference: YuhunPotentialPieceDTO | null;
+  readonly upperScore: number | null;
+  readonly baselineScore: number | null;
+}
+
+/** Display-only attributes for a private, in-browser potential-yuhun comparison. */
+export interface YuhunPotentialPieceDTO {
+  readonly position: number;
+  readonly suit: string;
+  readonly mainStat: StatId;
+  readonly mainStatLabel: string;
+  readonly mainValue?: number;
+  readonly level: number;
+  readonly star: number;
+  readonly subStats?: readonly { readonly stat: StatId; readonly value: number }[];
+  readonly intrinsicStats?: readonly { readonly stat: StatId; readonly value: number }[];
 }
 
 /** A privacy-safe, one-row-per-yuhun decision DTO. It intentionally omits the raw item ID. */
@@ -46,6 +64,21 @@ export interface YuhunDecisionRowDTO {
 
 function emptyRuleMatches(): { discard: string[]; enhance: string[] } {
   return { discard: [], enhance: [] };
+}
+
+function potentialPiece(item: TeamCalculationYuhunDTO | TeamCalculationPieceDTO | null): YuhunPotentialPieceDTO | null {
+  if (item === null) return null;
+  return {
+    position: item.position,
+    suit: item.suit,
+    mainStat: item.mainStat,
+    mainStatLabel: item.mainStatLabel,
+    ...(item.mainValue === undefined ? {} : { mainValue: item.mainValue }),
+    level: item.level,
+    star: item.star,
+    ...(item.subStats === undefined ? {} : { subStats: item.subStats }),
+    ...(item.intrinsicStats === undefined ? {} : { intrinsicStats: item.intrinsicStats })
+  };
 }
 
 function ruleShare(rule: AnalysisRuleInput): YuhunFilterShare {
@@ -76,6 +109,7 @@ function potentialTargetsByItem(
         strategy: "candidate-build" as const,
         position: 0,
         referenceSuit: null,
+        referenceYuhunId: null,
         referenceLevel: null,
         statesEvaluated: 0,
         upperScore: null,
@@ -84,7 +118,13 @@ function potentialTargetsByItem(
       }));
       if (evidence.length === 0) continue;
       for (const entry of evidence) {
+        const reference = entry.strategy === "candidate-build"
+          ? null
+          : entry.referenceYuhunId === undefined || entry.referenceYuhunId === null
+          ? entity.pieces.find((item) => item.position === entry.position) ?? null
+          : entity.pieces.find((item) => item.yuhunId === entry.referenceYuhunId) ?? null;
         const target: YuhunPotentialTarget = {
+          position: entry.position,
           teamLabel: report.label,
           shikigamiName: entity.shikigamiName,
           metricName: entity.metricName,
@@ -93,7 +133,11 @@ function potentialTargetsByItem(
           statesEvaluated: entry.statesEvaluated,
           referenceSuit: entry.referenceSuit,
           referenceLevel: entry.referenceLevel,
-          exactEmbryo: entry.exactEmbryo
+          exactEmbryo: entry.exactEmbryo,
+          candidate: potentialPiece(entity.potentialYuhunDetails?.find((item) => item.yuhunId === entry.yuhunId) ?? null),
+          reference: potentialPiece(reference),
+          upperScore: entry.upperScore,
+          baselineScore: entry.baselineScore
         };
         const id = entry.yuhunId;
         const values = result.get(id) ?? [];

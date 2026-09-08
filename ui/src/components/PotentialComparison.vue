@@ -1,0 +1,67 @@
+<script setup lang="ts">
+import { computed, ref } from "vue";
+import { X } from "@lucide/vue";
+import { STAT_LABELS, type YuhunPotentialPieceDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
+
+const props = defineProps<{ targets: readonly YuhunPotentialTarget[]; title?: string }>();
+const emit = defineEmits<{ close: [] }>();
+const selectedIndex = ref(0);
+const selected = computed(() => props.targets[selectedIndex.value] ?? null);
+const percentageStats = new Set(["attackPercent", "defensePercent", "hpPercent", "crit", "critDamage", "effectHit", "effectResist"]);
+
+function statValue(stat: string, value: number): string {
+  const percent = percentageStats.has(stat);
+  const display = percent ? value * 100 : value;
+  return `${display >= 0 ? "+" : ""}${display.toFixed(2).replace(/\.?0+$/, "")}${percent ? "%" : ""}`;
+}
+
+function rowValue(item: YuhunPotentialPieceDTO | null, label: string): string {
+  return detailRows(item).find((row) => row.label === label)?.value ?? "—";
+}
+
+function different(item: YuhunPotentialPieceDTO | null, other: YuhunPotentialPieceDTO | null, label: string): boolean {
+  return item !== null && other !== null && rowValue(item, label) !== rowValue(other, label);
+}
+
+function detailRows(item: YuhunPotentialPieceDTO | null): Array<{ label: string; value: string }> {
+  if (item === null) return [];
+  return [
+    { label: "位置", value: `${item.position}号` },
+    { label: "套装", value: item.suit },
+    { label: "星级", value: `${item.star}星` },
+    { label: "等级", value: `+${item.level}` },
+    { label: "主属性", value: `${STAT_LABELS[item.mainStat]} ${"mainValue" in item && item.mainValue !== undefined ? statValue(item.mainStat, item.mainValue) : ""}` },
+    { label: "副属性", value: item.subStats?.map((entry) => `${STAT_LABELS[entry.stat]} ${statValue(entry.stat, entry.value)}`).join(" · ") || "—" },
+    { label: "固有属性", value: item.intrinsicStats?.map((entry) => `${STAT_LABELS[entry.stat]} ${statValue(entry.stat, entry.value)}`).join(" · ") || "—" }
+  ];
+}
+
+function strategyLabel(target: YuhunPotentialTarget): string {
+  if (target.strategy === "candidate-build") return "候选组合";
+  if (target.strategy === "embryo-comparison") return target.exactEmbryo ? "胚子对比" : "胚子属性类型对比";
+  return target.statesEvaluated > 0 ? `强化上界 · ${target.statesEvaluated} 状态` : "强化上界";
+}
+</script>
+
+<template>
+  <div class="modal-backdrop" @click.self="emit('close')" @keydown.esc="emit('close')">
+    <section class="import-dialog potential-comparison-dialog" role="dialog" aria-modal="true" aria-labelledby="potential-comparison-title">
+      <header><div><span class="eyebrow">潜力关联</span><h2 id="potential-comparison-title">{{ title ?? '御魂与阵容指标对比' }}</h2></div><button class="icon-button" aria-label="关闭" @click="emit('close')"><X :size="17" /></button></header>
+      <div class="potential-comparison-content">
+        <div class="potential-target-list">
+          <button v-for="(target, index) in targets" :key="`${target.teamLabel}-${target.shikigamiName}-${target.metricName}-${target.strategy}-${index}`" :class="{ active: selectedIndex === index }" @click="selectedIndex = index">
+            <strong>{{ target.teamLabel }}</strong><span>{{ target.shikigamiName }} · {{ target.metricName }}</span><small>{{ strategyLabel(target) }}<template v-if="target.position"> · {{ target.position }}号</template></small>
+          </button>
+        </div>
+        <template v-if="selected">
+          <div class="potential-comparison-meta"><span>{{ strategyLabel(selected) }}</span><span v-if="selected.upperScore !== null">候选评分 {{ selected.upperScore.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}</span><span v-if="selected.baselineScore !== null">参考评分 {{ selected.baselineScore.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}</span></div>
+          <div v-if="selected.candidate || selected.reference" class="potential-diff-grid">
+            <article><h3>候选御魂</h3><div v-for="row in detailRows(selected.candidate)" :key="row.label" class="potential-diff-row" :class="{ changed: different(selected.candidate, selected.reference, row.label) }"><span>{{ row.label }}</span><strong>{{ row.value }}</strong></div><p v-if="!selected.candidate">旧报告未保存候选属性，请重新计算阵容。</p></article>
+            <article><h3>最优搭配 · 对应位置</h3><div v-for="row in detailRows(selected.reference)" :key="row.label" class="potential-diff-row" :class="{ changed: different(selected.reference, selected.candidate, row.label) }"><span>{{ row.label }}</span><strong>{{ row.value }}</strong></div><p v-if="!selected.reference">该证据没有可对应的最优搭配位置（通常是候选组合）。</p></article>
+          </div>
+          <p v-else class="potential-comparison-empty">旧报告没有保存御魂明细，请重新计算阵容后再查看对比。</p>
+        </template>
+      </div>
+    </section>
+  </div>
+</template>

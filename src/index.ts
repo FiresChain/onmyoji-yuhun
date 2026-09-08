@@ -161,6 +161,7 @@ export type {
   TeamExtraAttributes,
   TeamCalculationEntityDTO,
   TeamCalculationPieceDTO,
+  TeamCalculationYuhunDTO,
   TeamCalculationPotentialEvidenceDTO,
   TeamCalculationProgress,
   TeamCalculationReportDTO,
@@ -263,5 +264,6 @@ export type {
   AnalysisRuleInput,
   YuhunDecisionDisposition,
   YuhunDecisionRowDTO,
+  YuhunPotentialPieceDTO,
   YuhunPotentialTarget
 } from "./yuhun-decision.js";

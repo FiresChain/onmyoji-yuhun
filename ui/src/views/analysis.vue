@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Play, RefreshCw } from "@lucide/vue";
+import { GitCompareArrows, Play, RefreshCw } from "@lucide/vue";
 import ExcelColumnFilter, { type ExcelFilterOption, type ExcelFilterValue } from "../components/ExcelColumnFilter.vue";
-import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO } from "../../../src/browser.js";
+import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
+import PotentialComparison from "../components/PotentialComparison.vue";
 import { useWorkbenchStore } from "../store.js";
 
 const store = useWorkbenchStore();
 const yuhunSearch = ref("");
+const potentialComparisonTargets = ref<readonly YuhunPotentialTarget[] | null>(null);
+const potentialComparisonTitle = ref("");
 const actualTeamMetricCount = computed(() => store.teamCalculations.reduce((sum, report) => sum + report.entities.length, 0));
 const actualTeamCalculationCount = computed(() => store.teamCalculations.length);
 
@@ -136,6 +139,11 @@ function potentialStrategyTags(row: YuhunDecisionRowDTO): string[] {
   }
   return tags;
 }
+
+function openPotentialComparison(row: YuhunDecisionRowDTO): void {
+  potentialComparisonTargets.value = row.potentialTargets;
+  potentialComparisonTitle.value = `${row.position}号 ${row.suit} · 可关联的阵容指标`;
+}
 </script>
 
 <template>
@@ -160,8 +168,9 @@ function potentialStrategyTags(row: YuhunDecisionRowDTO): string[] {
       <div class="section-toolbar"><div><h2>单件御魂决策</h2><span>{{ store.yuhunDecisions?.total ?? 0 }} 件御魂 · 表头可多选筛选</span></div><div class="filters"><input v-model="yuhunSearch" placeholder="套装 / 原因" @keyup.enter="filterYuhun()" /></div></div>
       <div class="table-wrap"><table class="excel-table"><thead><tr>
         <th v-for="column in yuhunFilterColumns" :key="column.key"><div class="excel-column-head"><span>{{ column.label }}</span><ExcelColumnFilter :label="column.label" :options="optionsFor(column.key)" :selected="selectedFor(column.key)" :open="activeYuhunFilter === column.key" @toggle-open="toggleYuhunFilterMenu(column.key)" @toggle="toggleYuhunFilter(column.key, $event)" @select-all="selectAllYuhunFilter(column.key)" @clear="clearYuhunFilter(column.key)" @apply="applyYuhunFilter" /></div></th>
-      </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td>{{ row.suit }}</td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td>{{ STAT_LABELS[row.mainStat] }}</td><td>{{ row.subStats.map((stat) => STAT_LABELS[stat]).join(' / ') || '—' }}</td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><code>{{ row.reason }}</code><div v-if="row.reason.startsWith('可能提升') && row.potentialTargets.length > 0" class="potential-strategy-tags"><span v-for="tag in potentialStrategyTags(row)" :key="tag" class="potential-strategy-tag">{{ tag }}</span></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
+        </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td>{{ row.suit }}</td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td>{{ STAT_LABELS[row.mainStat] }}</td><td>{{ row.subStats.map((stat) => STAT_LABELS[stat]).join(' / ') || '—' }}</td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><code>{{ row.reason }}</code><div v-if="row.potentialTargets.length > 0" class="potential-strategy-tags"><span v-for="tag in potentialStrategyTags(row)" :key="tag" class="potential-strategy-tag">{{ tag }}</span><button class="potential-open" @click.stop="openPotentialComparison(row)"><GitCompareArrows :size="13" />查看对比</button></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
       <div class="pagination"><button :disabled="(store.yuhunDecisions?.page ?? 1)<=1" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)-1)">上一页</button><span>{{ store.yuhunDecisions?.page ?? 1 }} / {{ Math.max(1,Math.ceil((store.yuhunDecisions?.total ?? 0)/30)) }}</span><button :disabled="(store.yuhunDecisions?.page ?? 1)*30 >= (store.yuhunDecisions?.total ?? 0)" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)+1)">下一页</button></div>
     </section>
   </template>
+  <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
 </template>
