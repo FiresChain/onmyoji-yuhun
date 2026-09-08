@@ -270,6 +270,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   let lastTeamCalculationOptions: TeamCalculationRunOptions = {};
   let resumingTeamCalculation = false;
   let teamCalculationGeneration = 0;
+  let analysisGeneration = 0;
 
   function now(): number {
     return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
@@ -817,64 +818,53 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   async function runAnalysis(): Promise<void> {
+    const generation = analysisGeneration;
     begin("正在准备计算");
     await preparePerformanceBenchmark();
     begin("正在计算 baseline 与 3,920 类别");
     const startedAt = now();
     const stages: PerformanceStageTiming[] = [];
-    let analysisWorkerCount = 1;
-    let analysisScheduler = schedulerInfo(1);
-    // Existing team reports may come from a previous smart run. They are still
-    // part of the analysis input until the target configuration is changed.
-    let performanceReports: readonly TeamCalculationReportDTO[] = teamCalculations.value;
+    const analysisWorkerCount = 1;
+    const analysisScheduler = schedulerInfo(1);
+    // A report is emitted only after a whole lineup has finished. Capture the
+    // current completed reports once so analysis is strictly read-only with
+    // respect to the target-calculation state.
+    const performanceReports: readonly TeamCalculationReportDTO[] = [...teamCalculations.value];
     try {
-      if (enabledTeamTargets.value.length > 0 && teamCalculations.value.length === 0 && (snapshot.value?.heroCount ?? 0) > 0) {
-        const teamStartedAt = now();
-        const requests = teamCalculationRequests();
-        const initialSchedule = scheduleTeamCalculation(requests);
-        const debug = startTeamCalculationSchedulerDebug(requests.length, initialSchedule);
-        const schedule = debug === undefined ? initialSchedule : { ...initialSchedule, debug };
-        analysisWorkerCount = schedule.workerCount;
-        analysisScheduler = schedulerInfo(schedule.workerCount, schedule.resourceAllocation);
-        initializeTeamCalculationProgress(requests);
-        teamCalculations.value = await client.calculateTeamTargets(requests, (value) => {
-          progress.value = value;
-          updateTeamCalculationProgress(value);
-        }, (report) => {
-          teamCalculations.value = [...teamCalculations.value.filter((item) => item.id !== report.id), report];
-          markTeamCalculationResultsCompleted([report]);
-        }, schedule);
-        markTeamCalculationResultsCompleted(teamCalculations.value);
-        performanceReports = teamCalculations.value;
-        stages.push({ name: "calculateTeamTargets（阵容计算）", elapsedMs: Math.max(0, now() - teamStartedAt) });
-      }
       const analysisStartedAt = now();
-      analysis.value = await client.analyze({
+      const nextAnalysis = await client.analyze({
         templateIds: templateIds.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
         rules: analysisRules(),
-        teamReports: teamCalculations.value,
+        teamReports: performanceReports,
         diagnostics: teamCalculationSchedulerDebugEnabled.value
       }, (value) => { progress.value = value; });
+      if (generation !== analysisGeneration) return;
       stages.push({ name: "analyze（Worker 与传输）", elapsedMs: Math.max(0, now() - analysisStartedAt) });
       const resultQueryStartedAt = now();
-      decisions.value = await client.queryDecisions({ page: 1, pageSize: 30 });
-      yuhunDecisions.value = await client.queryYuhunDecisions({ page: 1, pageSize: 30 });
-      yuhunDecisionFacets.value = await client.queryYuhunDecisionFacets();
+      const [nextDecisions, nextYuhunDecisions, nextYuhunDecisionFacets, nextGateState] = await Promise.all([
+        client.queryDecisions({ page: 1, pageSize: 30 }),
+        client.queryYuhunDecisions({ page: 1, pageSize: 30 }),
+        client.queryYuhunDecisionFacets(),
+        client.getGateState()
+      ]);
+      if (generation !== analysisGeneration) return;
+      analysis.value = nextAnalysis;
+      decisions.value = nextDecisions;
+      yuhunDecisions.value = nextYuhunDecisions;
+      yuhunDecisionFacets.value = nextYuhunDecisionFacets;
       plan.value = null;
       simulation.value = null;
       checklist.value = null;
-      gateState.value = await client.getGateState();
+      gateState.value = nextGateState;
       stages.push({ name: "analyze（结果查询）", elapsedMs: Math.max(0, now() - resultQueryStartedAt) });
       const performanceRecord = recordPerformance({
         operation: "analysis",
         itemCount: snapshot.value?.total ?? null,
-        targetCount: performanceReports.length > 0 ? performanceReports.length : enabledTeamTargets.value.length,
-        metricCount: performanceReports.length > 0
-          ? performanceReports.reduce((sum, report) => sum + report.entities.length, 0)
-          : enabledTeamMetricCount.value,
-        categoryCount: analysis.value.categoryCount,
+        targetCount: performanceReports.length,
+        metricCount: performanceReports.reduce((sum, report) => sum + report.entities.length, 0),
+        categoryCount: nextAnalysis.categoryCount,
         elapsedMs: now() - startedAt,
         stages,
         reports: performanceReports,
@@ -889,15 +879,15 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         },
         workerCount: analysisWorkerCount,
         scheduler: analysisScheduler,
-        ...(analysis.value.diagnostics === undefined ? {} : {
+        ...(nextAnalysis.diagnostics === undefined ? {} : {
           analysisDiagnostics: {
-            ...analysis.value.diagnostics,
-            stages: analysis.value.diagnostics.stages.map((stage) => ({ name: stage.id, elapsedMs: stage.elapsedMs }))
+            ...nextAnalysis.diagnostics,
+            stages: nextAnalysis.diagnostics.stages.map((stage) => ({ name: stage.id, elapsedMs: stage.elapsedMs }))
           }
         })
       });
-      notice.value = teamCalculations.value.length > 0
-        ? `分析完成；规则命中与阵容潜力已合并到单件御魂决策（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，实际评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`
+      notice.value = performanceReports.length > 0
+        ? `分析完成；已基于 ${performanceReports.length} 条已完成阵容的保存搭配生成御魂潜力，不会改写阵容计算结果（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，实际评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`
         : `分析完成；规则命中与 baseline 决策已合并到单件御魂结果（耗时 ${Math.round(performanceRecord.elapsedMs)} ms）`;
     } catch (reason) {
       fail(reason);
@@ -944,8 +934,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   function invalidateAnalysisResults(): void {
-    teamCalculations.value = [];
-    teamCalculationProgress.value = {};
+    analysisGeneration += 1;
     analysis.value = null;
     decisions.value = null;
     yuhunDecisions.value = null;
@@ -954,6 +943,16 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     simulation.value = null;
     checklist.value = null;
     gateState.value = {};
+  }
+
+  function invalidateTeamCalculationResults(): void {
+    teamCalculationGeneration += 1;
+    resumingTeamCalculation = false;
+    teamCalculationPaused.value = false;
+    lastTeamCalculationOptions = {};
+    teamCalculations.value = [];
+    teamCalculationProgress.value = {};
+    invalidateAnalysisResults();
   }
 
   function teamCalculationRequests(): TeamCalculationRequest[] {
@@ -1171,12 +1170,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   function resetTeamCalculations(): void {
-    teamCalculationGeneration += 1;
-    resumingTeamCalculation = false;
-    teamCalculationPaused.value = false;
-    lastTeamCalculationOptions = {};
     client.resetTeamCalculations();
-    invalidateAnalysisResults();
+    invalidateTeamCalculationResults();
     progress.value = null;
     if (busy.value === "正在准备计算" || busy.value === "正在计算阵容御魂搭配" || busy.value === "计算已暂停") {
       busy.value = null;
@@ -1245,7 +1240,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         inspection
       }];
       void uploadTeamTarget({ code: normalizedCode, label: normalizedLabel.slice(0, 80), sceneId, sceneLabel: resolvedSceneLabel.slice(0, 80), difficulty: normalizedDifficulty, metricCount });
-      invalidateAnalysisResults();
+      invalidateTeamCalculationResults();
       notice.value = `已导入 ${metricCount} 个式神指标并选入目标集`;
       return true;
     } catch (reason) {
@@ -1336,7 +1331,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         inspection: null
       }];
       void uploadTeamTarget({ code: `manual:${JSON.stringify(manualTargets)}`, label: normalizedLabel.slice(0, 80), sceneId, sceneLabel: resolvedSceneLabel.slice(0, 80), difficulty: normalizedDifficulty, metricCount });
-      invalidateAnalysisResults();
+      invalidateTeamCalculationResults();
       notice.value = `已保存 ${manualTargets.length} 个阵容式神，其中 ${metricCount} 个参与御魂计算`;
       return true;
     } catch (reason) {
@@ -1379,7 +1374,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           inspection: null,
           locked: false
         }];
-        invalidateAnalysisResults();
+        invalidateTeamCalculationResults();
         notice.value = `已复制并保存为本地阵容“${normalizedLabel.slice(0, 80)}”`;
         return copiedId;
       }
@@ -1398,7 +1393,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         inspection: null,
         locked: false
       } : target);
-      invalidateAnalysisResults();
+      invalidateTeamCalculationResults();
       notice.value = `已保存本地阵容“${normalizedLabel.slice(0, 80)}”`;
       return id;
     } catch (reason) {
@@ -1411,19 +1406,20 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const target = teamTargets.value.find((item) => item.id === id);
     if (target === undefined || target.enabled === enabled) return;
     teamTargets.value = teamTargets.value.map((item) => item.id === id ? { ...item, enabled } : item);
-    invalidateAnalysisResults();
+    invalidateTeamCalculationResults();
   }
 
   function setTeamTargetGroupEnabled(sceneId: string, enabled: boolean): void {
     if (!teamTargets.value.some((target) => target.sceneId === sceneId && target.enabled !== enabled)) return;
     teamTargets.value = teamTargets.value.map((target) => target.sceneId === sceneId ? { ...target, enabled } : target);
-    invalidateAnalysisResults();
+    invalidateTeamCalculationResults();
   }
 
   function moveTeamTarget(id: string, sceneId: string, sceneLabel: string | null = null): void {
     const resolvedSceneLabel = sceneLabel?.trim() || findTargetScene(sceneId)?.sceneLabel;
     if (resolvedSceneLabel === undefined) throw new Error("目标分组不存在");
     teamTargets.value = teamTargets.value.map((target) => target.id === id ? { ...target, sceneId, sceneLabel: resolvedSceneLabel.slice(0, 80) } : target);
+    invalidateTeamCalculationResults();
   }
 
   function removeTeamTarget(id: string): void {
@@ -1431,7 +1427,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const next = teamTargets.value.filter((target) => target.id !== id);
     if (next.length === teamTargets.value.length) return;
     teamTargets.value = next;
-    invalidateAnalysisResults();
+    invalidateTeamCalculationResults();
   }
 
   function savePresetRule(input: PresetRuleInput, id: string | null = null): void {
@@ -1682,6 +1678,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     nextTeamTargetId = 1;
     presetRules.value = [];
     nextPresetRuleId = 1;
+    invalidateTeamCalculationResults();
     notice.value = "已恢复项目设置与摘要；原始快照未持久化，请重新导入同一快照继续计算";
   }
 
@@ -1723,7 +1720,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     teamTargets.value = importedTargets;
     nextTeamTargetId = Math.max(1, ...teamTargets.value.map((target) => Number(target.id.match(/(?:team-target|manual-target)-(\d+)$/)?.[1] ?? 0) + 1));
     sceneDataImportRevision.value += 1;
-    invalidateAnalysisResults();
+    invalidateTeamCalculationResults();
     notice.value = `已导入 ${payload.summary.sceneCount} 个关卡、${payload.summary.targetCount} 条阵容数据`;
   }
 
