@@ -1009,17 +1009,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     begin("正在计算阵容御魂搭配");
     const startedAt = now();
     try {
-      const initialSchedule = scheduleTeamCalculation(requests);
-      const debug = startTeamCalculationSchedulerDebug(smartMode
-        ? smartGroups.reduce((count, group) => count + group.targets.length, 0)
-        : requests.length, initialSchedule);
-      const initialScheduleWithDebug = debug === undefined ? initialSchedule : { ...initialSchedule, debug };
       const runTargetIds = new Set((smartMode
         ? smartGroups.flatMap((group) => group.targets)
         : manualTargets).map((target) => target.id));
       const reports: TeamCalculationReportDTO[] = resume
         ? teamCalculations.value.filter((report) => runTargetIds.has(report.id))
         : [];
+      let teamSchedule = scheduleTeamCalculation(requests);
       const upsertReport = (report: TeamCalculationReportDTO): void => {
         const index = reports.findIndex((item) => item.id === report.id);
         if (index === -1) reports.push(report);
@@ -1038,6 +1034,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         void persistSessionNow();
       };
       if (!smartMode) {
+        const debug = startTeamCalculationSchedulerDebug(requests.length, teamSchedule);
+        const initialScheduleWithDebug = debug === undefined ? teamSchedule : { ...teamSchedule, debug };
         const result = await client.calculateTeamTargets(requests, onProgress, onReport, initialScheduleWithDebug);
         for (const report of result) upsertReport(report);
       } else {
@@ -1057,36 +1055,44 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           }
           return null;
         };
-        const active = smartGroups.flatMap((group) => {
+        const smartRequestFor = (group: SmartTeamTargetGroup, index: number): TeamCalculationRequest => {
+          const target = group.targets[index]!;
+          const sceneMutualExclusion = findTargetScene(target.sceneId, targetCatalog.value)?.mutualExclusion === true;
+          const occupied = sceneMutualExclusion
+            ? reports
+              .filter((report) => group.targets.some((candidate) => candidate.id === report.id))
+              .flatMap((report) => report.reservedYuhunIds ?? [])
+            : [];
+          return teamCalculationRequestFor(target, occupied);
+        };
+        const groupByTargetId = new Map(smartGroups.flatMap((group) => group.targets.map((target) => [target.id, group] as const)));
+        const initialSmartRequests = smartGroups.flatMap((group) => {
           const index = nextSmartIndex(group);
-          return index === null ? [] : [{ group, index }];
+          return index === null ? [] : [smartRequestFor(group, index)];
         });
-        while (active.length > 0) {
-          const roundRequests = active.map(({ group, index }) => {
-            const target = group.targets[index]!;
-            const sceneMutualExclusion = findTargetScene(target.sceneId, targetCatalog.value)?.mutualExclusion === true;
-            const occupied = sceneMutualExclusion
-              ? reports
-                .filter((report) => group.targets.some((candidate) => candidate.id === report.id))
-                .flatMap((report) => report.reservedYuhunIds ?? [])
-              : [];
-            return teamCalculationRequestFor(target, occupied);
-          });
-          markTeamCalculationPending(roundRequests);
-          const roundSchedule = scheduleTeamCalculation(roundRequests);
-          const roundReports = await client.calculateTeamTargets(
-            roundRequests,
-            onProgress,
-            onReport,
-            debug === undefined ? roundSchedule : { ...roundSchedule, debug }
-          );
-          for (const report of roundReports) upsertReport(report);
-          const next = active.flatMap(({ group }) => {
+        teamSchedule = scheduleTeamCalculation(initialSmartRequests);
+        const debug = initialSmartRequests.length === 0
+          ? undefined
+          : startTeamCalculationSchedulerDebug(smartGroups.reduce((count, group) => count + group.targets.length, 0), teamSchedule);
+        const initialScheduleWithDebug = debug === undefined ? teamSchedule : { ...teamSchedule, debug };
+        markTeamCalculationPending(initialSmartRequests);
+        const smartReports = await client.calculateTeamTargetsDynamically(
+          initialSmartRequests,
+          (request) => {
+            if (generation !== teamCalculationGeneration) return [];
+            const group = groupByTargetId.get(request.id);
+            if (group === undefined) return [];
             const index = nextSmartIndex(group);
-            return index === null ? [] : [{ group, index }];
-          });
-          active.splice(0, active.length, ...next);
-        }
+            if (index === null) return [];
+            const next = smartRequestFor(group, index);
+            markTeamCalculationPending([next]);
+            return [next];
+          },
+          onProgress,
+          onReport,
+          initialScheduleWithDebug
+        );
+        for (const report of smartReports) upsertReport(report);
       }
       if (generation !== teamCalculationGeneration) return;
       teamCalculations.value = reports;
@@ -1106,8 +1112,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           candidateLimitPerPosition: TEAM_CALCULATION_SEARCH_DEFAULTS.candidateLimitPerPosition,
           topN: "20-or-100"
         },
-        workerCount: initialSchedule.workerCount,
-        scheduler: schedulerInfo(initialSchedule.workerCount, initialSchedule.resourceAllocation)
+        workerCount: teamSchedule.workerCount,
+        scheduler: schedulerInfo(teamSchedule.workerCount, teamSchedule.resourceAllocation)
       });
       const entities = teamCalculations.value.flatMap((report) => report.entities);
       const success = entities.filter((entity) => entity.status === "success").length;

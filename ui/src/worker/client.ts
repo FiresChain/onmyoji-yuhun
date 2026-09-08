@@ -56,6 +56,11 @@ export interface TeamCalculationSchedule {
   readonly debug?: (event: SchedulerDebugEvent) => void;
 }
 
+export type TeamCalculationNextRequests = (
+  request: TeamCalculationRequest,
+  report: TeamCalculationReportDTO
+) => readonly TeamCalculationRequest[];
+
 export function resolveTeamCalculationSchedule(
   requests: readonly TeamCalculationRequest[],
   profile: CalculationResourceProfile,
@@ -88,31 +93,37 @@ interface TeamTaskQueues {
   readonly mutualByScene: Map<string, MutualSceneQueue>;
   readonly readyMutualSceneIds: string[];
   preferNormal: boolean;
+  nextMutualDebugGroup: number;
 }
 
 function createTeamTaskQueues(requests: readonly TeamCalculationRequest[]): TeamTaskQueues {
-  const normal: ScheduledTeamTask[] = [];
-  const mutualByScene = new Map<string, MutualSceneQueue>();
-  let nextMutualDebugGroup = 0;
-  requests.forEach((request, targetIndex) => {
-    if (request.sceneMutualExclusion === true && request.sceneId !== undefined) {
-      const queue = mutualByScene.get(request.sceneId) ?? {
-        tasks: [],
-        occupiedYuhunIds: new Set<string>(),
-        debugGroup: nextMutualDebugGroup++
-      };
-      queue.tasks.push({ request, targetIndex, mutualSceneId: request.sceneId, enqueuedAt: schedulerNow() });
-      mutualByScene.set(request.sceneId, queue);
-      return;
-    }
-    normal.push({ request, targetIndex, mutualSceneId: null, enqueuedAt: schedulerNow() });
-  });
-  return {
-    normal,
-    mutualByScene,
-    readyMutualSceneIds: [...mutualByScene.keys()],
-    preferNormal: true
+  const queues: TeamTaskQueues = {
+    normal: [],
+    mutualByScene: new Map<string, MutualSceneQueue>(),
+    readyMutualSceneIds: [],
+    preferNormal: true,
+    nextMutualDebugGroup: 0
   };
+  requests.forEach((request, targetIndex) => enqueueTeamTask(queues, request, targetIndex));
+  queues.readyMutualSceneIds.push(...queues.mutualByScene.keys());
+  return queues;
+}
+
+function enqueueTeamTask(queues: TeamTaskQueues, request: TeamCalculationRequest, targetIndex: number): ScheduledTeamTask {
+  const mutualSceneId = request.sceneMutualExclusion === true && request.sceneId !== undefined ? request.sceneId : null;
+  const task: ScheduledTeamTask = { request, targetIndex, mutualSceneId, enqueuedAt: schedulerNow() };
+  if (mutualSceneId === null) {
+    queues.normal.push(task);
+    return task;
+  }
+  const queue = queues.mutualByScene.get(mutualSceneId) ?? {
+    tasks: [],
+    occupiedYuhunIds: new Set<string>(),
+    debugGroup: queues.nextMutualDebugGroup++
+  };
+  queue.tasks.push(task);
+  queues.mutualByScene.set(mutualSceneId, queue);
+  return task;
 }
 
 function schedulerNow(): number {
@@ -156,7 +167,7 @@ function takeNextTeamTask(queues: TeamTaskQueues): ScheduledTeamTask | null {
 
 function releaseMutualScene(queues: TeamTaskQueues, sceneId: string): void {
   const queue = queues.mutualByScene.get(sceneId);
-  if (queue !== undefined && queue.tasks.length > 0) queues.readyMutualSceneIds.push(sceneId);
+  if (queue !== undefined && queue.tasks.length > 0 && !queues.readyMutualSceneIds.includes(sceneId)) queues.readyMutualSceneIds.push(sceneId);
 }
 
 interface PendingRequest<T> {
@@ -192,6 +203,8 @@ export class WorkflowClient {
   private snapshotBuffer: ArrayBuffer | null = null;
   private snapshotRestore: Promise<unknown> | null = null;
   private readonly parallelClients = new Set<WorkflowClient>();
+  private readonly parallelTaskWaiters = new Set<() => void>();
+  private parallelSchedulerGeneration = 0;
   private pauseRequested = false;
 
   constructor() {
@@ -227,6 +240,21 @@ export class WorkflowClient {
       this.pending.clear();
     });
     return worker;
+  }
+
+  private wakeParallelTaskWaiters(limit = Number.POSITIVE_INFINITY): void {
+    let remaining = limit;
+    for (const wake of [...this.parallelTaskWaiters]) {
+      if (remaining <= 0) break;
+      this.parallelTaskWaiters.delete(wake);
+      wake();
+      remaining -= 1;
+    }
+  }
+
+  private interruptParallelSchedulers(): void {
+    this.parallelSchedulerGeneration += 1;
+    this.wakeParallelTaskWaiters();
   }
 
   private call<T>(method: string, args: readonly unknown[] = [], transfer: Transferable[] = [], onProgress?: (progress: WorkerProgress) => void, onReport?: (report: TeamCalculationReportDTO) => void): Promise<T> {
@@ -302,6 +330,208 @@ export class WorkflowClient {
     }
     if (schedule?.debug !== undefined) return this.calculateTeamTargetsSingle(requests, onProgress, onReport, schedule);
     return this.call("calculateTeamTargets", [requests], [], onProgress, onReport);
+  }
+
+  async calculateTeamTargetsDynamically(
+    initialRequests: readonly TeamCalculationRequest[],
+    nextRequests: TeamCalculationNextRequests,
+    onProgress?: (progress: WorkerProgress) => void,
+    onReport?: (report: TeamCalculationReportDTO) => void,
+    schedule?: TeamCalculationSchedule
+  ): Promise<readonly TeamCalculationReportDTO[]> {
+    this.pauseRequested = false;
+    if (this.snapshotRestore !== null) {
+      await this.snapshotRestore;
+      this.snapshotRestore = null;
+    }
+    if (initialRequests.length === 0) return [];
+    const snapshot = this.snapshotBuffer;
+    if (snapshot === null) throw new Error("请先导入游戏快照");
+    const requestedConcurrency = schedule?.workerCount ?? teamCalculationWorkerCount(initialRequests.length);
+    return this.calculateTeamTargetsDynamicallyParallel(
+      initialRequests,
+      nextRequests,
+      onProgress,
+      onReport,
+      Math.max(1, Math.floor(requestedConcurrency)),
+      schedule,
+      snapshot
+    );
+  }
+
+  private async calculateTeamTargetsDynamicallyParallel(
+    initialRequests: readonly TeamCalculationRequest[],
+    nextRequests: TeamCalculationNextRequests,
+    onProgress: ((progress: WorkerProgress) => void) | undefined,
+    onReport: ((report: TeamCalculationReportDTO) => void) | undefined,
+    requestedConcurrency: number,
+    schedule: TeamCalculationSchedule | undefined,
+    snapshot: ArrayBuffer
+  ): Promise<readonly TeamCalculationReportDTO[]> {
+    // Smart selection can reveal a follow-up lineup after any scene finishes.
+    // Keep initialized workers alive while other scenes are still deciding
+    // whether they need to add more work.
+    const debug = schedule?.debug;
+    const debugStartedAt = schedulerNow();
+    const atMs = (timestamp = schedulerNow()): number => Math.max(0, timestamp - debugStartedAt);
+    const reports: TeamCalculationReportDTO[] = [];
+    const queues = createTeamTaskQueues(initialRequests);
+    const concurrency = Math.min(
+      Math.max(1, queues.normal.length + queues.readyMutualSceneIds.length),
+      requestedConcurrency
+    );
+    const schedulerGeneration = this.parallelSchedulerGeneration;
+    let nextTargetIndex = initialRequests.length;
+    let activeWorkers = 0;
+    let activeTaskCount = 0;
+
+    const queueState = (): Pick<SchedulerDebugEvent, "activeWorkers" | "normalQueueLength" | "mutualReadyQueueLength" | "pendingTaskCount"> => debugQueueState(queues, activeWorkers);
+    const emitQueued = (task: ScheduledTeamTask, timestamp = schedulerNow()): void => {
+      const mutualQueue = task.mutualSceneId === null ? undefined : queues.mutualByScene.get(task.mutualSceneId);
+      debug?.({
+        atMs: atMs(timestamp),
+        type: "task-queued",
+        targetIndex: task.targetIndex,
+        queueType: task.mutualSceneId === null ? "normal" : "mutual",
+        sceneGroup: mutualQueue?.debugGroup,
+        ...queueState()
+      });
+    };
+    const runnableTaskCount = (): number => queues.normal.length + queues.readyMutualSceneIds.length;
+    const assertSchedulerActive = (): void => {
+      if (schedulerGeneration !== this.parallelSchedulerGeneration) throw new Error("计算已重置");
+    };
+    const takeTaskOrWait = async (workerId: number): Promise<ScheduledTeamTask | null> => {
+      let idleRecorded = false;
+      while (true) {
+        assertSchedulerActive();
+        const task = takeNextTeamTask(queues);
+        if (task !== null) return task;
+        if (!idleRecorded) {
+          debug?.({ atMs: atMs(), type: "worker-idle", workerId, ...queueState() });
+          idleRecorded = true;
+        }
+        if (activeTaskCount === 0) return null;
+        await new Promise<void>((resolve) => this.parallelTaskWaiters.add(resolve));
+      }
+    };
+
+    debug?.({ atMs: 0, type: "batch-start", ...queueState() });
+    for (const task of [...queues.normal, ...[...queues.mutualByScene.values()].flatMap((queue) => queue.tasks)].sort((left, right) => left.targetIndex - right.targetIndex)) {
+      emitQueued(task, debugStartedAt);
+    }
+
+    const runWorker = async (workerId: number): Promise<void> => {
+      const client = new WorkflowClient();
+      this.parallelClients.add(client);
+      try {
+        const snapshotCopy = snapshot.slice(0);
+        await client.importSnapshot(snapshotCopy);
+        debug?.({ atMs: atMs(), type: "worker-start", workerId, ...queueState() });
+        while (true) {
+          const task = await takeTaskOrWait(workerId);
+          if (task === null) return;
+          const { request, targetIndex, mutualSceneId } = task;
+          const mutualQueue = mutualSceneId === null ? undefined : queues.mutualByScene.get(mutualSceneId);
+          const startedAt = schedulerNow();
+          activeTaskCount += 1;
+          activeWorkers += 1;
+          debug?.({
+            atMs: atMs(startedAt),
+            type: "task-start",
+            workerId,
+            targetIndex,
+            queueType: mutualSceneId === null ? "normal" : "mutual",
+            sceneGroup: mutualQueue?.debugGroup,
+            queueWaitMs: Math.max(0, startedAt - task.enqueuedAt),
+            ...queueState()
+          });
+          const effectiveRequest = mutualQueue === undefined
+            ? request
+            : {
+              ...request,
+              occupiedYuhunIds: [...new Set([...(request.occupiedYuhunIds ?? []), ...mutualQueue.occupiedYuhunIds])]
+            };
+          try {
+            const result = await client.calculateTeamTargets([effectiveRequest], (progress) => {
+              onProgress?.({
+                ...progress,
+                targetId: request.id,
+                targetLabel: request.label,
+                targetIndex,
+                targetTotal: initialRequests.length
+              });
+            });
+            const report = result[0];
+            if (report === undefined) throw new Error(`阵容“${request.label}”没有返回计算结果`);
+            reports.push(report);
+            const completedAt = schedulerNow();
+            activeWorkers = Math.max(0, activeWorkers - 1);
+            debug?.({
+              atMs: atMs(completedAt),
+              type: "task-complete",
+              workerId,
+              targetIndex,
+              queueType: mutualSceneId === null ? "normal" : "mutual",
+              sceneGroup: mutualQueue?.debugGroup,
+              runMs: Math.max(0, completedAt - startedAt),
+              ...queueState()
+            });
+            if (mutualQueue !== undefined && mutualSceneId !== null) {
+              for (const id of report.reservedYuhunIds ?? []) mutualQueue.occupiedYuhunIds.add(id);
+            }
+            onReport?.(report);
+
+            const runnableBefore = runnableTaskCount();
+            const followUps = nextRequests(request, report);
+            for (const followUp of followUps) emitQueued(enqueueTeamTask(queues, followUp, nextTargetIndex++), completedAt);
+            let mutualReleased = false;
+            if (mutualSceneId !== null) {
+              const wasReady = queues.readyMutualSceneIds.includes(mutualSceneId);
+              releaseMutualScene(queues, mutualSceneId);
+              mutualReleased = !wasReady && queues.readyMutualSceneIds.includes(mutualSceneId);
+            }
+            if (mutualReleased && mutualQueue !== undefined) {
+              debug?.({
+                atMs: atMs(completedAt),
+                type: "mutual-release",
+                workerId,
+                targetIndex,
+                queueType: "mutual",
+                sceneGroup: mutualQueue.debugGroup,
+                ...queueState()
+              });
+            }
+            const newlyRunnable = Math.max(0, runnableTaskCount() - runnableBefore);
+            activeTaskCount = Math.max(0, activeTaskCount - 1);
+            // The completing worker immediately takes one available task; wake
+            // only the additional waiting workers needed for the rest.
+            this.wakeParallelTaskWaiters(Math.max(0, newlyRunnable - 1));
+            if (activeTaskCount === 0 && runnableTaskCount() === 0) this.wakeParallelTaskWaiters();
+          } catch (error) {
+            activeWorkers = Math.max(0, activeWorkers - 1);
+            activeTaskCount = Math.max(0, activeTaskCount - 1);
+            this.wakeParallelTaskWaiters();
+            throw error;
+          }
+        }
+      } finally {
+        this.parallelClients.delete(client);
+        client.dispose();
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => runWorker(workerIndex + 1)));
+    } catch (error) {
+      this.interruptParallelSchedulers();
+      for (const client of this.parallelClients) client.dispose();
+      this.parallelClients.clear();
+      if (this.pauseRequested) throw new WorkflowClientPausedError();
+      throw error;
+    }
+    debug?.({ atMs: atMs(), type: "batch-complete", ...queueState() });
+    return reports;
   }
 
   private async calculateTeamTargetsSingle(
@@ -553,6 +783,7 @@ export class WorkflowClient {
   }
 
   cancelAndReset(): void {
+    this.interruptParallelSchedulers();
     this.snapshotBuffer = null;
     this.snapshotRestore = null;
     for (const client of this.parallelClients) client.dispose();
@@ -567,6 +798,7 @@ export class WorkflowClient {
   /** Stop active workers while retaining the imported snapshot for resume. */
   pauseAndReset(): void {
     this.pauseRequested = true;
+    this.interruptParallelSchedulers();
     for (const client of this.parallelClients) client.dispose();
     this.parallelClients.clear();
     this.worker.terminate();
@@ -582,6 +814,7 @@ export class WorkflowClient {
   /** Stop active calculation workers, clear their state, and retain the snapshot. */
   resetTeamCalculations(): void {
     this.pauseRequested = false;
+    this.interruptParallelSchedulers();
     for (const client of this.parallelClients) client.dispose();
     this.parallelClients.clear();
     this.worker.terminate();
