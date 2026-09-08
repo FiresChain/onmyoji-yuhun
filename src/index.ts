@@ -184,6 +184,7 @@ export type {
   SpeedCategoryFrequencyReport,
   SpeedDecisionReport,
   SuitSpeedCategory,
+  Tier1SelectionDiagnostics,
   ThresholdComparison,
   ThresholdOutcome
 } from "./decision.js";
@@ -233,6 +234,7 @@ export type {
 } from "./capacity.js";
 export type {
   AnalysisSummaryDTO,
+  AnalysisDiagnosticsDTO,
   AnalyzeInput,
   BaselineDTO,
   CapacityProjectionDTO,

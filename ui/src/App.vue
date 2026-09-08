@@ -8,7 +8,10 @@ import {
   CALCULATION_RESOURCE_PROFILES,
   capturePerformanceDevice,
   loadPerformanceBenchmark,
+  parseDiagnosticsExport,
   type CalculationResourceProfile,
+  type DiagnosticsExport,
+  type ImportedDiagnostics,
   type PerformanceBenchmark,
   type PerformanceRecord,
   type PerformanceTargetTiming
@@ -23,12 +26,14 @@ const route = useRoute();
 const store = useWorkbenchStore();
 const activeIndex = computed(() => STEPS.findIndex((step) => step.id === route.name));
 const performanceOpen = ref(false);
-const diagnosticsSection = ref<"device" | "performance" | "errors">("device");
+const diagnosticsSection = ref<"device" | "performance" | "imported" | "errors">("device");
 const deviceInfo = ref(capturePerformanceDevice());
 const benchmarkRunning = ref(false);
 const benchmark = ref<PerformanceBenchmark | null>(loadPerformanceBenchmark());
 const telemetryEnabled = ref(telemetryConsent());
 const sceneDataInput = ref<HTMLInputElement | null>(null);
+const diagnosticsInput = ref<HTMLInputElement | null>(null);
+const importedDiagnostics = ref<ImportedDiagnostics | null>(null);
 const calculationErrors = computed(() => store.teamCalculations.filter((report) =>
   report.entities.some((entity) => entity.status === "unsupported")
 ));
@@ -102,40 +107,43 @@ function formatRecordedAt(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function exportPerformanceRecords(): void {
-  const exportedAt = new Date();
-  const payload = {
-    schemaVersion: 1,
-    kind: "onmyoji-yuhun-performance-export",
-    exportedAt: exportedAt.toISOString(),
-    benchmark: benchmark.value,
-    records: store.performanceHistory
-  };
+function downloadJson(payload: unknown, filename: string): void {
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `onmyoji-yuhun-performance-${exportedAt.toISOString().slice(0, 10)}.json`;
+  anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
 }
 
-function exportTeamCalculationSchedulerDebugLog(): void {
-  const log = store.teamCalculationSchedulerDebugLog;
-  if (log === null || log.events.length === 0) return;
+function exportDiagnostics(): void {
   const exportedAt = new Date();
-  const payload = {
+  const payload: DiagnosticsExport = {
     schemaVersion: 1,
-    kind: "onmyoji-yuhun-scheduler-debug-export",
+    kind: "onmyoji-yuhun-diagnostics-export",
     exportedAt: exportedAt.toISOString(),
     benchmark: benchmark.value,
-    log
+    records: store.performanceHistory,
+    schedulerLog: store.teamCalculationSchedulerDebugLog
   };
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `onmyoji-yuhun-scheduler-debug-${exportedAt.toISOString().slice(0, 10)}.json`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  downloadJson(payload, `onmyoji-yuhun-diagnostics-${exportedAt.toISOString().slice(0, 10)}.json`);
+}
+
+async function importDiagnostics(files: FileList | null): Promise<void> {
+  const file = files?.[0];
+  if (diagnosticsInput.value !== null) diagnosticsInput.value.value = "";
+  if (file === undefined) return;
+  try {
+    const imported = parseDiagnosticsExport(JSON.parse(await file.text()) as unknown);
+    if (imported === null) {
+      window.alert("不是可识别的性能诊断文件");
+      return;
+    }
+    importedDiagnostics.value = imported;
+    diagnosticsSection.value = "imported";
+  } catch {
+    window.alert("不是可识别的性能诊断文件");
+  }
 }
 
 async function chooseSceneData(files: FileList | null): Promise<void> {
@@ -277,17 +285,19 @@ async function run(action: () => void | Promise<void>): Promise<void> {
         <header>
           <div><span class="eyebrow">LOCAL DIAGNOSTICS</span><h2 id="performance-title">计算性能记录</h2></div>
           <div class="performance-dialog-actions">
-            <button class="icon-button" title="导出性能记录 JSON" :disabled="benchmark === null && store.performanceHistory.length === 0" @click="exportPerformanceRecords"><Download :size="16" /></button>
+            <button class="icon-button" title="导出性能诊断 JSON" :disabled="benchmark === null && store.performanceHistory.length === 0 && store.teamCalculationSchedulerDebugLog === null" @click="exportDiagnostics"><Download :size="16" /></button>
+            <button class="icon-button" title="导入性能诊断 JSON" @click="diagnosticsInput?.click()"><Upload :size="16" /></button>
             <button class="icon-button" title="清空性能记录" :disabled="store.performanceHistory.length === 0" @click="store.clearPerformanceRecords"><Trash2 :size="16" /></button>
-            <button class="icon-button" title="导出调度调试日志 JSON" :disabled="store.teamCalculationSchedulerDebugLog === null || store.teamCalculationSchedulerDebugLog.events.length === 0" @click="exportTeamCalculationSchedulerDebugLog"><Download :size="16" /></button>
             <button class="icon-button" title="清空调度调试日志" :disabled="store.teamCalculationSchedulerDebugLog === null" @click="store.clearTeamCalculationSchedulerDebugLog"><Trash2 :size="16" /></button>
             <button class="icon-button" title="关闭" @click="performanceOpen = false"><X :size="18" /></button>
+            <input ref="diagnosticsInput" class="visually-hidden" type="file" accept="application/json,.json" @change="importDiagnostics(($event.target as HTMLInputElement).files)" />
           </div>
         </header>
         <div class="diagnostics-layout">
           <nav class="diagnostics-nav" aria-label="诊断设置">
             <button :class="{ active: diagnosticsSection === 'device' }" @click="diagnosticsSection = 'device'"><Cpu :size="16" /><span>基础信息</span></button>
             <button :class="{ active: diagnosticsSection === 'performance' }" @click="diagnosticsSection = 'performance'"><Activity :size="16" /><span>计算性能记录</span><small>{{ store.performanceHistory.length }}</small></button>
+            <button v-if="importedDiagnostics !== null" :class="{ active: diagnosticsSection === 'imported' }" @click="diagnosticsSection = 'imported'"><Upload :size="16" /><span>导入诊断</span><small>{{ importedDiagnostics.records.length + (importedDiagnostics.schedulerLog === null ? 0 : 1) }}</small></button>
             <button :class="{ active: diagnosticsSection === 'errors' }" @click="diagnosticsSection = 'errors'"><AlertTriangle :size="16" /><span>错误信息</span><small>{{ calculationErrors.length }}</small></button>
           </nav>
           <div class="performance-dialog-body diagnostics-content">
@@ -309,7 +319,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div><dt>CPU 多核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · ${benchmark.cpuMultiWorkerCount} Worker` }}</dd></div>
               <div><dt>CPU 并行倍率</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuParallelSpeedup.toFixed(2)}×` }}</dd></div>
               <div><dt>阵容计算资源</dt><dd><select :value="store.teamCalculationResourceProfile" :disabled="store.busy !== null" aria-label="阵容计算资源档位" @change="updateTeamCalculationResourceProfile(($event.target as HTMLSelectElement).value)"><option v-for="profile in CALCULATION_RESOURCE_PROFILES" :key="profile.id" :value="profile.id">{{ profile.label }}</option></select></dd></div>
-              <div><dt>调度调试</dt><dd><label class="switch"><input type="checkbox" :checked="store.teamCalculationSchedulerDebugEnabled" :disabled="store.busy !== null" aria-label="记录阵容调度调试日志" @change="updateTeamCalculationSchedulerDebugEnabled(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ store.teamCalculationSchedulerDebugEnabled ? `记录 ${store.teamCalculationSchedulerDebugLog?.events.length ?? 0}` : '关闭' }}</b></label></dd></div>
+              <div><dt>性能诊断</dt><dd><label class="switch"><input type="checkbox" :checked="store.teamCalculationSchedulerDebugEnabled" :disabled="store.busy !== null" aria-label="记录性能诊断" @change="updateTeamCalculationSchedulerDebugEnabled(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ store.teamCalculationSchedulerDebugEnabled ? '开启' : '关闭' }}</b></label></dd></div>
               <div v-if="store.teamCalculationResourceProfile === 'custom'"><dt>自定义 Worker</dt><dd><input :value="store.customTeamCalculationWorkerCount ?? 1" :disabled="store.busy !== null" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="自定义阵容计算 Worker 数" @change="updateCustomTeamCalculationWorkerCount(($event.target as HTMLInputElement).value)" /></dd></div>
               <div><dt>内存吞吐</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒` }}</dd></div>
               <div><dt>GPU 计算</dt><dd>{{ benchmark === null ? '尚未测试' : benchmark.gpu.status === 'completed' ? `${benchmark.gpu.iterationsPerSecond?.toLocaleString()} f32 迭代/秒` : `${benchmark.gpu.status} · ${benchmark.gpu.reason ?? '无详情'}` }}</dd></div>
@@ -347,6 +357,22 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               </div>
               <div class="performance-comparison">算法 {{ entry.algorithm.id }} · {{ entry.algorithm.runtime }} · 调度 {{ entry.scheduler.id }} / {{ entry.scheduler.mode }} · Worker {{ entry.scheduler.workerCount }}<template v-if="resourceAllocationLabel(entry)"> · {{ resourceAllocationLabel(entry) }}</template> · 剪枝 {{ entry.pruningRate === null ? "-" : `${(entry.pruningRate * 100).toFixed(1)}%` }} · 搜索吞吐 {{ entry.evaluatedPerSecond === null ? "-" : `${Math.round(entry.evaluatedPerSecond).toLocaleString()}/s` }} · 端到端吞吐 {{ entry.endToEndEvaluatedPerSecond === null ? "-" : `${Math.round(entry.endToEndEvaluatedPerSecond).toLocaleString()}/s` }} · 精确 {{ entry.exactCount }} / 近似 {{ entry.approximateCount }}</div>
               <div class="performance-parameters">参数：{{ formatAlgorithmParameters(entry) }}</div>
+              <details v-if="entry.analysisDiagnostics" class="performance-targets">
+                <summary>查看分析诊断</summary>
+                <div class="performance-metrics">
+                  <div><dt>+15 御魂</dt><dd>{{ entry.analysisDiagnostics.level15Count.toLocaleString() }}</dd></div>
+                  <div><dt>六星 +0 样本</dt><dd>{{ entry.analysisDiagnostics.level0SampleCount.toLocaleString() }}</dd></div>
+                  <div><dt>有样本类别</dt><dd>{{ entry.analysisDiagnostics.observedCategoryCount.toLocaleString() }} / {{ entry.analysisDiagnostics.categoryCount.toLocaleString() }}</dd></div>
+                  <div><dt>规则扫描</dt><dd>{{ entry.analysisDiagnostics.ruleCount.toLocaleString() }} 条</dd></div>
+                  <div><dt>阵容报告 / 实体</dt><dd>{{ entry.analysisDiagnostics.teamReportCount.toLocaleString() }} / {{ entry.analysisDiagnostics.teamEntityCount.toLocaleString() }}</dd></div>
+                  <div><dt>潜力证据 / 御魂</dt><dd>{{ entry.analysisDiagnostics.potentialEvidenceCount.toLocaleString() }} / {{ entry.analysisDiagnostics.potentialYuhunCount.toLocaleString() }}</dd></div>
+                  <div><dt>Tier 1 候选</dt><dd>{{ entry.analysisDiagnostics.tier1CandidateCount.toLocaleString() }}</dd></div>
+                  <div><dt>Tier 1 覆盖上限</dt><dd>{{ entry.analysisDiagnostics.tier1MaximumCoverage.toLocaleString() }}</dd></div>
+                  <div><dt>背包状态转移</dt><dd>{{ entry.analysisDiagnostics.tier1TransitionCount.toLocaleString() }}</dd></div>
+                  <div><dt>背包状态更新</dt><dd>{{ entry.analysisDiagnostics.tier1UpdatedStateCount.toLocaleString() }}</dd></div>
+                </div>
+                <div class="performance-stages"><span v-for="stage in entry.analysisDiagnostics.stages" :key="stage.name">{{ stage.name }} <b>{{ formatMs(stage.elapsedMs) }}</b></span></div>
+              </details>
               <div v-if="comparisonLabel(index, entry)" class="performance-delta">{{ comparisonLabel(index, entry) }}</div>
               <details v-if="entry.targets.length > 0" class="performance-targets">
                 <summary>查看各目标耗时（{{ entry.targets.length }}）</summary>
@@ -358,6 +384,24 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div class="performance-device">基准：{{ entry.benchmark === null ? "记录时未测试" : `${entry.benchmark.id} · CPU ${entry.benchmark.cpuSingle.evaluationsPerSecond.toLocaleString()} / ${entry.benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · 内存 ${entry.benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒 · GPU ${entry.benchmark.gpu.iterationsPerSecond?.toLocaleString() ?? entry.benchmark.gpu.status}` }} · 目标耗时合计 {{ formatMs(entry.targetElapsedMs) }} · 非目标阶段 {{ formatMs(entry.overheadMs) }}</div>
             </article>
             </template>
+          </section>
+          <section v-else-if="diagnosticsSection === 'imported' && importedDiagnostics !== null" class="diagnostics-section">
+            <div class="performance-notice">导入文件只读查看，不会恢复快照、项目设置或计算结果。</div>
+            <dl class="performance-metrics">
+              <div><dt>导出时间</dt><dd>{{ formatRecordedAt(importedDiagnostics.exportedAt) }}</dd></div>
+              <div><dt>来源</dt><dd>{{ importedDiagnostics.sourceKind === 'unified' ? '统一诊断包' : importedDiagnostics.sourceKind === 'performance' ? '旧性能记录' : '旧调度日志' }}</dd></div>
+              <div><dt>性能记录</dt><dd>{{ importedDiagnostics.records.length.toLocaleString() }}</dd></div>
+              <div><dt>调度事件</dt><dd>{{ importedDiagnostics.schedulerLog?.events.length.toLocaleString() ?? '-' }}</dd></div>
+            </dl>
+            <article v-for="entry in importedDiagnostics.records" :key="entry.id" class="performance-entry">
+              <div class="performance-entry-head"><div><strong>{{ operationLabels[entry.operation] }}</strong><span>{{ formatRecordedAt(entry.recordedAt) }}</span></div><b>{{ formatMs(entry.elapsedMs) }}</b></div>
+              <div class="performance-stages"><span v-for="stage in entry.stages" :key="stage.name">{{ stage.name }} <b>{{ formatMs(stage.elapsedMs) }}</b></span></div>
+              <div v-if="entry.analysisDiagnostics" class="performance-comparison">分析：+0 样本 {{ entry.analysisDiagnostics.level0SampleCount.toLocaleString() }} · 潜力证据 {{ entry.analysisDiagnostics.potentialEvidenceCount.toLocaleString() }} · 背包转移 {{ entry.analysisDiagnostics.tier1TransitionCount.toLocaleString() }}</div>
+            </article>
+            <article v-if="importedDiagnostics.schedulerLog" class="performance-entry">
+              <div class="performance-entry-head"><div><strong>阵容调度</strong><span>{{ formatRecordedAt(importedDiagnostics.schedulerLog.recordedAt) }}</span></div><b>{{ importedDiagnostics.schedulerLog.events.length.toLocaleString() }} 事件</b></div>
+              <div class="performance-comparison">{{ importedDiagnostics.schedulerLog.resourceProfile }} · {{ importedDiagnostics.schedulerLog.requestedWorkerCount }} Worker · {{ importedDiagnostics.schedulerLog.requestCount }} 请求 · 丢弃 {{ importedDiagnostics.schedulerLog.droppedEventCount }} 事件</div>
+            </article>
           </section>
           <section v-else class="diagnostics-section">
             <div v-if="calculationErrors.length === 0" class="performance-empty"><AlertTriangle :size="20" /><span>当前没有阵容计算错误。</span></div>

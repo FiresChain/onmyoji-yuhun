@@ -124,6 +124,30 @@ export interface AnalyzeInput {
   readonly budgetPerTenThousand?: number;
   readonly rules?: readonly AnalysisRuleInput[];
   readonly teamReports?: readonly TeamCalculationReportDTO[];
+  /** Enables privacy-safe phase/counter diagnostics for this analysis run. */
+  readonly diagnostics?: boolean;
+}
+
+export interface AnalysisDiagnosticsDTO {
+  readonly itemCount: number;
+  readonly level15Count: number;
+  readonly level0SampleCount: number;
+  readonly templateCount: number;
+  readonly categoryCount: number;
+  readonly observedCategoryCount: number;
+  readonly ruleCount: number;
+  readonly teamReportCount: number;
+  readonly teamEntityCount: number;
+  readonly potentialEvidenceCount: number;
+  readonly potentialYuhunCount: number;
+  readonly tier1CandidateCount: number;
+  readonly tier1MaximumCoverage: number;
+  readonly tier1TransitionCount: number;
+  readonly tier1UpdatedStateCount: number;
+  readonly stages: readonly {
+    readonly id: "baseline" | "frequency" | "category-decision" | "decision-rows";
+    readonly elapsedMs: number;
+  }[];
 }
 
 export interface BaselineSlotDTO {
@@ -154,6 +178,7 @@ export interface AnalysisSummaryDTO {
   readonly frequencyBiasNotice: string;
   readonly inventoryCapacity: InventoryCapacityDTO;
   readonly markedDiscardProjection: CapacityProjectionDTO;
+  readonly diagnostics?: AnalysisDiagnosticsDTO;
 }
 
 export interface InventoryCapacityDTO {
@@ -527,8 +552,15 @@ export class YuhunWorkflow {
     if (key === this.analysisKey && this.analysis !== null) return this.analysis;
     try {
       const templates = templatesFor(input);
+      const diagnosticsEnabled = input.diagnostics === true;
+      const diagnosticStages: AnalysisDiagnosticsDTO["stages"][number][] = [];
+      const diagnosticStage = <T extends AnalysisDiagnosticsDTO["stages"][number]["id"]>(id: T, startedAt: number): void => {
+        if (diagnosticsEnabled) diagnosticStages.push({ id, elapsedMs: Math.max(0, performanceNow() - startedAt) });
+      };
+      const performanceNow = (): number => typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
       const level15 = this.items.filter((item) => item.star === 6 && item.level === 15);
       if (level15.length === 0) workflowFailure("analysis", "MISSING_LEVEL_15", "快照中没有六星 +15 御魂，无法计算 baseline");
+      const baselineStartedAt = performanceNow();
       const bundle = templates.map((template) => {
         const cacheKey = JSON.stringify(template);
         const cached = this.baselineCache.get(cacheKey);
@@ -537,19 +569,25 @@ export class YuhunWorkflow {
         this.baselineCache.set(cacheKey, calculated);
         return calculated;
       });
+      diagnosticStage("baseline", baselineStartedAt);
       const thresholds = mergeThresholds(bundle.map((entry) => entry.thresholds));
+      const frequencyStartedAt = performanceNow();
       const frequencies = this.frequencyCache ?? estimateSpeedCategoryFrequencies(this.items);
       this.frequencyCache ??= frequencies;
+      diagnosticStage("frequency", frequencyStartedAt);
       if (frequencies.sampleSize === 0) workflowFailure("analysis", "MISSING_LEVEL_0", "快照中没有六星 +0 样本，无法估计类别频率");
       const decisionInput = {
         templates,
         thresholds,
         frequencies,
-        budgetPerTenThousand: input.budgetPerTenThousand ?? (input.riskTier === "tier0" ? 0 : 1)
+        budgetPerTenThousand: input.budgetPerTenThousand ?? (input.riskTier === "tier0" ? 0 : 1),
+        diagnostics: diagnosticsEnabled
       };
       const decisionKey = JSON.stringify(decisionInput);
+      const decisionStartedAt = performanceNow();
       const decision = this.decisionCache.get(decisionKey) ?? decideSpeedCategories(decisionInput);
       this.decisionCache.set(decisionKey, decision);
+      diagnosticStage("category-decision", decisionStartedAt);
       const reasonCounts: Record<string, number> = {};
       for (const category of decision.categories) increment(reasonCounts, category.reason);
       const baselines = bundle.map(({ baseline }) => ({
@@ -562,12 +600,14 @@ export class YuhunWorkflow {
           speed: slot.speed
         }))
       }));
+      const decisionRowsStartedAt = performanceNow();
       const yuhunDecisions = buildYuhunDecisionRows(
         this.items,
         input.rules ?? [],
         decision.categories,
         input.teamReports ?? []
       );
+      diagnosticStage("decision-rows", decisionRowsStartedAt);
       const markedDiscardIds = new Set(
         yuhunDecisions.flatMap((row, index) =>
           row.disposition === "discard" && this.items![index]!.star === 6
@@ -593,7 +633,27 @@ export class YuhunWorkflow {
           before: inventoryCapacity(this.items),
           after: inventoryCapacity(this.items, markedDiscardIds),
           discardCount: markedDiscardIds.size
-        }
+        },
+        ...(diagnosticsEnabled ? {
+          diagnostics: {
+            itemCount: this.items.length,
+            level15Count: level15.length,
+            level0SampleCount: frequencies.sampleSize,
+            templateCount: templates.length,
+            categoryCount: decision.categories.length,
+            observedCategoryCount: frequencies.categories.filter((category) => category.count > 0).length,
+            ruleCount: input.rules?.length ?? 0,
+            teamReportCount: input.teamReports?.length ?? 0,
+            teamEntityCount: (input.teamReports ?? []).reduce((sum, report) => sum + report.entities.length, 0),
+            potentialEvidenceCount: (input.teamReports ?? []).reduce((sum, report) => sum + report.entities.reduce((entitySum, entity) => entitySum + (entity.potentialEvidence?.length ?? entity.potentialYuhunIds?.length ?? 0), 0), 0),
+            potentialYuhunCount: new Set((input.teamReports ?? []).flatMap((report) => report.entities.flatMap((entity) => entity.potentialYuhunIds ?? entity.potentialEvidence?.map((entry) => entry.yuhunId) ?? []))).size,
+            tier1CandidateCount: decision.tier1SelectionDiagnostics?.candidateCount ?? 0,
+            tier1MaximumCoverage: decision.tier1SelectionDiagnostics?.maximumCoverage ?? 0,
+            tier1TransitionCount: decision.tier1SelectionDiagnostics?.transitionCount ?? 0,
+            tier1UpdatedStateCount: decision.tier1SelectionDiagnostics?.updatedStateCount ?? 0,
+            stages: diagnosticStages
+          }
+        } : {})
       };
       this.yuhunDecisions = yuhunDecisions;
       this.markedDiscardIds = markedDiscardIds;

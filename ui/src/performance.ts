@@ -152,6 +152,43 @@ export interface SchedulerDebugLog {
   readonly droppedEventCount: number;
 }
 
+export interface AnalysisDiagnosticSummary {
+  readonly itemCount: number;
+  readonly level15Count: number;
+  readonly level0SampleCount: number;
+  readonly templateCount: number;
+  readonly categoryCount: number;
+  readonly observedCategoryCount: number;
+  readonly ruleCount: number;
+  readonly teamReportCount: number;
+  readonly teamEntityCount: number;
+  readonly potentialEvidenceCount: number;
+  readonly potentialYuhunCount: number;
+  readonly tier1CandidateCount: number;
+  readonly tier1MaximumCoverage: number;
+  readonly tier1TransitionCount: number;
+  readonly tier1UpdatedStateCount: number;
+  readonly stages: readonly PerformanceStageTiming[];
+}
+
+/** Privacy-safe diagnostics export shared by performance and scheduler tools. */
+export interface DiagnosticsExport {
+  readonly schemaVersion: 1;
+  readonly kind: "onmyoji-yuhun-diagnostics-export";
+  readonly exportedAt: string;
+  readonly benchmark: PerformanceBenchmark | null;
+  readonly records: readonly PerformanceRecord[];
+  readonly schedulerLog: SchedulerDebugLog | null;
+}
+
+export interface ImportedDiagnostics {
+  readonly sourceKind: "unified" | "performance" | "scheduler";
+  readonly exportedAt: string;
+  readonly benchmark: PerformanceBenchmark | null;
+  readonly records: readonly PerformanceRecord[];
+  readonly schedulerLog: SchedulerDebugLog | null;
+}
+
 const SCHEDULER_DEBUG_MAX_EVENTS = 5_000;
 let schedulerDebugLog: SchedulerDebugLog | null = null;
 
@@ -182,6 +219,26 @@ export function appendSchedulerDebugEvent(event: SchedulerDebugEvent): void {
 
 export function getSchedulerDebugLog(): SchedulerDebugLog | null {
   return schedulerDebugLog;
+}
+
+export function parseDiagnosticsExport(value: unknown): ImportedDiagnostics | null {
+  if (!isRecord(value)) return null;
+  const benchmark = normalizePerformanceBenchmark(value.benchmark);
+  if (value.kind === "onmyoji-yuhun-diagnostics-export" && value.schemaVersion === 1) {
+    const records = Array.isArray(value.records) ? value.records.flatMap((entry) => normalizeRecord(entry)) : [];
+    const schedulerLog = normalizeSchedulerDebugLog(value.schedulerLog);
+    return { sourceKind: "unified", exportedAt: typeof value.exportedAt === "string" ? value.exportedAt : "", benchmark, records, schedulerLog };
+  }
+  if (value.kind === "onmyoji-yuhun-performance-export") {
+    const records = Array.isArray(value.records) ? value.records.flatMap((entry) => normalizeRecord(entry)) : [];
+    return { sourceKind: "performance", exportedAt: typeof value.exportedAt === "string" ? value.exportedAt : "", benchmark, records, schedulerLog: null };
+  }
+  if (value.kind === "onmyoji-yuhun-scheduler-debug-export" && isRecord(value.log)) {
+    const schedulerLog = normalizeSchedulerDebugLog(value.log);
+    if (schedulerLog === null) return null;
+    return { sourceKind: "scheduler", exportedAt: typeof value.exportedAt === "string" ? value.exportedAt : "", benchmark, records: [], schedulerLog };
+  }
+  return null;
 }
 
 export function clearSchedulerDebugLog(): void {
@@ -233,6 +290,8 @@ export interface PerformanceRecord {
   /** Anonymous input-shape key for comparing like-for-like runs. */
   readonly workloadKey: string;
   readonly metricDistribution: Readonly<Record<string, number>>;
+  /** Present only when the performance-diagnostics switch was enabled. */
+  readonly analysisDiagnostics?: AnalysisDiagnosticSummary;
 }
 
 const STORAGE_KEY = "onmyoji-yuhun-performance-history-v1";
@@ -254,6 +313,77 @@ function storage(): Storage | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeSchedulerDebugLog(value: unknown): SchedulerDebugLog | null {
+  if (!isRecord(value)
+    || value.schemaVersion !== 1
+    || value.kind !== "onmyoji-yuhun-scheduler-debug"
+    || typeof value.recordedAt !== "string"
+    || !isCalculationResourceProfile(value.resourceProfile)
+    || !isNonNegativeInteger(value.requestedWorkerCount)
+    || value.requestedWorkerCount < 1
+    || !isNonNegativeInteger(value.requestCount)
+    || !isNonNegativeInteger(value.droppedEventCount)
+    || !Array.isArray(value.events)) return null;
+  const events = value.events.flatMap((event) => normalizeSchedulerDebugEvent(event));
+  if (events.length !== value.events.length) return null;
+  return {
+    schemaVersion: 1,
+    kind: "onmyoji-yuhun-scheduler-debug",
+    recordedAt: value.recordedAt,
+    resourceProfile: value.resourceProfile,
+    requestedWorkerCount: value.requestedWorkerCount,
+    requestCount: value.requestCount,
+    events,
+    droppedEventCount: value.droppedEventCount
+  };
+}
+
+function normalizeSchedulerDebugEvent(value: unknown): SchedulerDebugEvent[] {
+  const eventTypes: readonly SchedulerDebugEventType[] = [
+    "batch-start", "worker-start", "task-queued", "task-reestimated", "task-start",
+    "task-complete", "mutual-release", "worker-idle", "batch-complete"
+  ];
+  if (!isRecord(value)
+    || typeof value.atMs !== "number"
+    || !Number.isFinite(value.atMs)
+    || value.atMs < 0
+    || !eventTypes.includes(value.type as SchedulerDebugEventType)) return [];
+  const numberField = (field: string): number | undefined =>
+    typeof value[field] === "number" && Number.isFinite(value[field]) && value[field] >= 0
+      ? value[field]
+      : undefined;
+  const workerId = numberField("workerId");
+  const targetIndex = numberField("targetIndex");
+  const sceneGroup = numberField("sceneGroup");
+  const queueWaitMs = numberField("queueWaitMs");
+  const runMs = numberField("runMs");
+  const estimatedWork = numberField("estimatedWork");
+  const activeWorkers = numberField("activeWorkers");
+  const normalQueueLength = numberField("normalQueueLength");
+  const mutualReadyQueueLength = numberField("mutualReadyQueueLength");
+  const pendingTaskCount = numberField("pendingTaskCount");
+  const queueType = value.queueType === "normal" || value.queueType === "mutual" ? value.queueType : undefined;
+  return [{
+    atMs: value.atMs,
+    type: value.type as SchedulerDebugEventType,
+    ...(workerId === undefined ? {} : { workerId }),
+    ...(targetIndex === undefined ? {} : { targetIndex }),
+    ...(queueType === undefined ? {} : { queueType }),
+    ...(sceneGroup === undefined ? {} : { sceneGroup }),
+    ...(queueWaitMs === undefined ? {} : { queueWaitMs }),
+    ...(runMs === undefined ? {} : { runMs }),
+    ...(estimatedWork === undefined ? {} : { estimatedWork }),
+    ...(activeWorkers === undefined ? {} : { activeWorkers }),
+    ...(normalQueueLength === undefined ? {} : { normalQueueLength }),
+    ...(mutualReadyQueueLength === undefined ? {} : { mutualReadyQueueLength }),
+    ...(pendingTaskCount === undefined ? {} : { pendingTaskCount })
+  }];
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function normalizeDevice(value: unknown): PerformanceDeviceInfo {

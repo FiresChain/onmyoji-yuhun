@@ -69,6 +69,7 @@ import {
   type PerformanceSchedulerInfo,
   type PerformanceStageTiming,
   type PerformanceTargetTiming,
+  type AnalysisDiagnosticSummary,
   type SchedulerDebugEvent,
   type SchedulerDebugLog
 } from "./performance.js";
@@ -341,6 +342,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     algorithmParameters?: Readonly<Record<string, string | number | boolean>>;
     workerCount?: number;
     scheduler?: PerformanceSchedulerInfo;
+    analysisDiagnostics?: AnalysisDiagnosticSummary;
   }): PerformanceRecord {
     const reports = input.reports ?? [];
     const entities = reports.flatMap((report) => report.entities);
@@ -422,7 +424,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       criticalPathMs,
       overheadMs: Math.max(0, input.elapsedMs - criticalPathMs),
       workloadKey,
-      metricDistribution
+      metricDistribution,
+      ...(input.analysisDiagnostics === undefined ? {} : { analysisDiagnostics: input.analysisDiagnostics })
     };
     performanceHistory.value = appendPerformanceRecord(record);
     void uploadPerformanceRecord(record);
@@ -849,8 +852,11 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         riskTier: riskTier.value,
         budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
         rules: analysisRules(),
-        teamReports: teamCalculations.value
+        teamReports: teamCalculations.value,
+        diagnostics: teamCalculationSchedulerDebugEnabled.value
       }, (value) => { progress.value = value; });
+      stages.push({ name: "analyze（Worker 与传输）", elapsedMs: Math.max(0, now() - analysisStartedAt) });
+      const resultQueryStartedAt = now();
       decisions.value = await client.queryDecisions({ page: 1, pageSize: 30 });
       yuhunDecisions.value = await client.queryYuhunDecisions({ page: 1, pageSize: 30 });
       yuhunDecisionFacets.value = await client.queryYuhunDecisionFacets();
@@ -858,7 +864,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       simulation.value = null;
       checklist.value = null;
       gateState.value = await client.getGateState();
-      stages.push({ name: "analyze（baseline 与类别分析）", elapsedMs: Math.max(0, now() - analysisStartedAt) });
+      stages.push({ name: "analyze（结果查询）", elapsedMs: Math.max(0, now() - resultQueryStartedAt) });
       const performanceRecord = recordPerformance({
         operation: "analysis",
         itemCount: snapshot.value?.total ?? null,
@@ -878,7 +884,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           teamCalculationIncluded: performanceReports.length > 0
         },
         workerCount: analysisWorkerCount,
-        scheduler: analysisScheduler
+        scheduler: analysisScheduler,
+        ...(analysis.value.diagnostics === undefined ? {} : {
+          analysisDiagnostics: {
+            ...analysis.value.diagnostics,
+            stages: analysis.value.diagnostics.stages.map((stage) => ({ name: stage.id, elapsedMs: stage.elapsedMs }))
+          }
+        })
       });
       notice.value = teamCalculations.value.length > 0
         ? `分析完成；规则命中与阵容潜力已合并到单件御魂决策（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，实际评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`

@@ -91,6 +91,15 @@ export interface SpeedDecisionReport {
   readonly tier0DiscardedCategoryCount: number;
   readonly tier1DiscardedCategoryCount: number;
   readonly categories: readonly SpeedCategoryDecision[];
+  /** Present only when the caller requests diagnostics for the Tier 1 selector. */
+  readonly tier1SelectionDiagnostics?: Tier1SelectionDiagnostics;
+}
+
+export interface Tier1SelectionDiagnostics {
+  readonly candidateCount: number;
+  readonly maximumCoverage: number;
+  readonly transitionCount: number;
+  readonly updatedStateCount: number;
 }
 
 export interface DecideSpeedCategoriesInput {
@@ -98,6 +107,7 @@ export interface DecideSpeedCategoriesInput {
   readonly thresholds: DominanceThresholds;
   readonly frequencies: SpeedCategoryFrequencyReport;
   readonly budgetPerTenThousand?: number;
+  readonly diagnostics?: boolean;
 }
 
 interface TemplateCompatibility {
@@ -514,8 +524,9 @@ function initialDecision(
 
 function selectTier1Candidates(
   decisions: MutableDecision[],
-  budget: number
-): Set<number> {
+  budget: number,
+  collectDiagnostics: boolean
+): { readonly selected: Set<number>; readonly diagnostics: Tier1SelectionDiagnostics } {
   const candidates = decisions
     .map((decision, decisionIndex) => ({ decision, decisionIndex }))
     .filter(({ decision }) =>
@@ -524,7 +535,12 @@ function selectTier1Candidates(
       decision.riskPerTenThousand !== null
     )
     .sort((left, right) => left.decision.key.localeCompare(right.decision.key));
-  if (candidates.length === 0) return new Set();
+  if (candidates.length === 0) {
+    return {
+      selected: new Set(),
+      diagnostics: { candidateCount: 0, maximumCoverage: 0, transitionCount: 0, updatedStateCount: 0 }
+    };
+  }
 
   const maximumCoverage = candidates.reduce((sum, candidate) => sum + candidate.decision.count, 0);
   const bestRisk = new Float64Array(maximumCoverage + 1);
@@ -535,12 +551,15 @@ function selectTier1Candidates(
     () => null
   );
   let reachableCoverage = 0;
+  let transitionCount = 0;
+  let updatedStateCount = 0;
 
   // Exact 0/1 knapsack: primary objective is observed discard coverage;
   // minimum cumulative risk is retained for every exact coverage value.
   for (const [candidateIndex, candidate] of candidates.entries()) {
     const count = candidate.decision.count;
     const risk = candidate.decision.riskPerTenThousand!;
+    transitionCount += reachableCoverage + 1;
     for (let covered = reachableCoverage; covered >= 0; covered -= 1) {
       const previousRisk = bestRisk[covered]!;
       if (!Number.isFinite(previousRisk)) continue;
@@ -557,6 +576,7 @@ function selectTier1Candidates(
           candidateIndex,
           previous
         };
+        if (collectDiagnostics) updatedStateCount += 1;
       }
     }
     reachableCoverage += count;
@@ -572,7 +592,15 @@ function selectTier1Candidates(
     selected.add(candidates[node.candidateIndex]!.decisionIndex);
     node = node.previous;
   }
-  return selected;
+  return {
+    selected,
+    diagnostics: {
+      candidateCount: candidates.length,
+      maximumCoverage,
+      transitionCount,
+      updatedStateCount
+    }
+  };
 }
 
 /**
@@ -605,8 +633,8 @@ export function decideSpeedCategories(input: DecideSpeedCategoriesInput): SpeedD
   const decisions = frequencies.map((frequency) =>
     initialDecision(frequency, templates, input.thresholds)
   );
-  const selected = selectTier1Candidates(decisions, budget);
-  for (const decisionIndex of selected) {
+  const selection = selectTier1Candidates(decisions, budget, input.diagnostics === true);
+  for (const decisionIndex of selection.selected) {
     const decision = decisions[decisionIndex]!;
     decision.disposition = "discard";
     decision.riskTier = "tier1";
@@ -636,6 +664,7 @@ export function decideSpeedCategories(input: DecideSpeedCategoriesInput): SpeedD
       : observedDiscardCount / input.frequencies.sampleSize,
     tier0DiscardedCategoryCount: discarded.filter((decision) => decision.riskTier === "tier0").length,
     tier1DiscardedCategoryCount: discarded.filter((decision) => decision.riskTier === "tier1").length,
-    categories: decisions
+    categories: decisions,
+    ...(input.diagnostics === true ? { tier1SelectionDiagnostics: selection.diagnostics } : {})
   };
 }
