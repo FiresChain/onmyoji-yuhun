@@ -121,6 +121,7 @@ export interface PageDTO<T> {
 }
 
 export interface AnalyzeInput {
+  readonly defaultDisposition?: "retain" | "discard";
   readonly templateIds: readonly ("zhaocai-speed" | "scattered-speed")[];
   readonly riskTier: RiskTier;
   readonly budgetPerTenThousand?: number;
@@ -606,8 +607,8 @@ export class YuhunWorkflow {
       const yuhunDecisions = buildYuhunDecisionRows(
         this.items,
         input.rules ?? [],
-        decision.categories,
-        input.teamReports ?? []
+        input.teamReports ?? [],
+        input.defaultDisposition ?? "retain"
       );
       diagnosticStage("decision-rows", decisionRowsStartedAt);
       const markedDiscardIds = new Set(
@@ -816,8 +817,8 @@ export class YuhunWorkflow {
       (mainStats === null || mainStats.has(entry.mainStat)) &&
       (subStats === null || entry.subStats.some((stat) => subStats.has(stat))) &&
       (dispositions === null || dispositions.has(entry.disposition)) &&
-      (reasons === null || reasons.has(entry.reason)) &&
-      (search === "" || entry.suit.toLocaleLowerCase().includes(search) || entry.reason.toLocaleLowerCase().includes(search))
+      (reasons === null || (entry.reasonTags ?? [entry.reason]).some((tag) => reasons.has(tag))) &&
+      (search === "" || entry.suit.toLocaleLowerCase().includes(search) || (entry.reasonTags ?? [entry.reason]).some((tag) => tag.toLocaleLowerCase().includes(search)))
     );
     return { page, pageSize, total: filtered.length, rows: filtered.slice(start, start + pageSize) };
   }
@@ -840,7 +841,7 @@ export class YuhunWorkflow {
       mainStats.add(entry.mainStat);
       for (const stat of entry.subStats) subStats.add(stat);
       dispositions.add(entry.disposition);
-      reasons.add(entry.reason);
+      for (const tag of entry.reasonTags ?? [entry.reason]) reasons.add(tag);
     }
     return {
       suits: [...suits].sort((left, right) => left.localeCompare(right)),

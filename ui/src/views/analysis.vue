@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { GitCompareArrows, Play, RefreshCw } from "@lucide/vue";
+import { Play, RefreshCw, X } from "@lucide/vue";
 import ExcelColumnFilter, { type ExcelFilterOption, type ExcelFilterValue } from "../components/ExcelColumnFilter.vue";
 import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
 import PotentialComparison from "../components/PotentialComparison.vue";
@@ -10,6 +10,10 @@ const store = useWorkbenchStore();
 const yuhunSearch = ref("");
 const potentialComparisonTargets = ref<readonly YuhunPotentialTarget[] | null>(null);
 const potentialComparisonTitle = ref("");
+const reasonDetail = ref<{ row: YuhunDecisionRowDTO; tag: string } | null>(null);
+const detailRules = computed(() => (reasonDetail.value?.row.matchedRules ?? []).filter((rule) =>
+  reasonDetail.value?.tag === "弃置捞回" || (reasonDetail.value?.tag === "强化规则" ? rule.pool === "enhance" : reasonDetail.value?.tag === "弃置规则" && rule.pool === "discard")
+));
 const actualTeamMetricCount = computed(() => store.teamCalculations.reduce((sum, report) => sum + report.entities.length, 0));
 const actualTeamCalculationCount = computed(() => store.teamCalculations.length);
 
@@ -127,27 +131,18 @@ function closeYuhunFilterMenu(): void {
   activeYuhunFilter.value = null;
 }
 
-function potentialStrategyTags(row: YuhunDecisionRowDTO): string[] {
-  const tags: string[] = [];
-  for (const target of row.potentialTargets) {
-    const label = target.strategy === "candidate-build"
-      ? "候选组合"
-      : target.strategy === "embryo-comparison"
-        ? target.exactEmbryo ? "胚子对比" : "胚子属性类型对比"
-        : target.statesEvaluated > 0 ? `强化上界 · ${target.statesEvaluated} 状态` : "强化上界";
-    if (!tags.includes(label)) tags.push(label);
-  }
-  return tags;
-}
-
 function openPotentialComparison(row: YuhunDecisionRowDTO): void {
   potentialComparisonTargets.value = row.potentialTargets;
   potentialComparisonTitle.value = `${row.position}号 ${row.suit} · 可提升的阵容评分`;
 }
+function openReason(row: YuhunDecisionRowDTO, tag: string): void {
+  if (tag === "阵容提升") openPotentialComparison(row);
+  else reasonDetail.value = { row, tag };
+}
 </script>
 
 <template>
-  <section class="page-heading"><div><span class="eyebrow">03 / ANALYSIS</span><h1>分析结果</h1></div><div class="analysis-actions"><div class="segmented" aria-label="风险档位"><button :class="{ active: store.riskTier === 'tier0' }" @click="store.setRiskTier('tier0')">保守档</button><button :class="{ active: store.riskTier === 'tier1' }" @click="store.setRiskTier('tier1')">常规档</button></div><button class="primary" :disabled="!store.snapshot || !!store.busy" @click="store.runAnalysis"><RefreshCw v-if="store.analysis" :size="17" /><Play v-else :size="17" />{{ store.analysis ? '重新分析' : '运行分析' }}</button></div></section>
+  <section class="page-heading"><div><span class="eyebrow">03 / ANALYSIS</span><h1>分析结果</h1></div><div class="analysis-actions"><label class="default-disposition">默认御魂处理<select :value="store.defaultDisposition" @change="store.setDefaultDisposition(($event.target as HTMLSelectElement).value as 'retain' | 'discard')"><option value="retain">保留</option><option value="discard">弃置</option></select></label><button class="primary" :disabled="!store.snapshot || !!store.busy" @click="store.runAnalysis"><RefreshCw v-if="store.analysis" :size="17" /><Play v-else :size="17" />{{ store.analysis ? '重新分析' : '运行分析' }}</button></div></section>
 
   <div v-if="store.enabledTeamTargets.length > 0 || actualTeamCalculationCount > 0" class="inline-warning team-calculation-pending">
     <template v-if="actualTeamCalculationCount > 0">已保存 {{ actualTeamCalculationCount }} 条完成阵容、{{ actualTeamMetricCount }} 个已计算式神指标；本次分析只读取这些搭配，不会重新计算或修改阵容结果。</template>
@@ -167,9 +162,44 @@ function openPotentialComparison(row: YuhunDecisionRowDTO): void {
       <div class="section-toolbar"><div><h2>单件御魂决策</h2><span>{{ store.yuhunDecisions?.total ?? 0 }} 件御魂 · 表头可多选筛选</span></div><div class="filters"><input v-model="yuhunSearch" placeholder="套装 / 原因" @keyup.enter="filterYuhun()" /></div></div>
       <div class="table-wrap"><table class="excel-table"><thead><tr>
         <th v-for="column in yuhunFilterColumns" :key="column.key"><div class="excel-column-head"><span>{{ column.label }}</span><ExcelColumnFilter :label="column.label" :options="optionsFor(column.key)" :selected="selectedFor(column.key)" :open="activeYuhunFilter === column.key" @toggle-open="toggleYuhunFilterMenu(column.key)" @toggle="toggleYuhunFilter(column.key, $event)" @select-all="selectAllYuhunFilter(column.key)" @clear="clearYuhunFilter(column.key)" @apply="applyYuhunFilter" /></div></th>
-        </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td>{{ row.suit }}</td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td>{{ STAT_LABELS[row.mainStat] }}</td><td>{{ row.subStats.map((stat) => STAT_LABELS[stat]).join(' / ') || '—' }}</td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><code>{{ row.reason }}</code><div v-if="row.potentialTargets.length > 0" class="potential-strategy-tags"><span v-for="tag in potentialStrategyTags(row)" :key="tag" class="potential-strategy-tag">{{ tag }}</span><button class="potential-open" @click.stop="openPotentialComparison(row)"><GitCompareArrows :size="13" />查看可提升阵容</button></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
+        </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td>{{ row.suit }}</td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td>{{ STAT_LABELS[row.mainStat] }}</td><td>{{ row.subStats.map((stat) => STAT_LABELS[stat]).join(' / ') || '—' }}</td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><div class="potential-strategy-tags"><button v-for="tag in row.reasonTags ?? [row.reason]" :key="tag" class="potential-open" @click.stop="openReason(row, tag)">{{ tag }}</button></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
       <div class="pagination"><button :disabled="(store.yuhunDecisions?.page ?? 1)<=1" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)-1)">上一页</button><span>{{ store.yuhunDecisions?.page ?? 1 }} / {{ Math.max(1,Math.ceil((store.yuhunDecisions?.total ?? 0)/30)) }}</span><button :disabled="(store.yuhunDecisions?.page ?? 1)*30 >= (store.yuhunDecisions?.total ?? 0)" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)+1)">下一页</button></div>
     </section>
   </template>
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
+  <div v-if="reasonDetail" class="modal-backdrop" @click.self="reasonDetail = null" @keydown.esc="reasonDetail = null">
+    <section class="reason-dialog" role="dialog" aria-modal="true" aria-labelledby="reason-title" tabindex="-1">
+      <header><h2 id="reason-title">{{ reasonDetail.tag }}</h2><button autofocus aria-label="关闭" @click="reasonDetail = null"><X :size="18" /></button></header>
+      <p>{{ reasonDetail.row.position }}号 {{ reasonDetail.row.suit }} · {{ reasonDetail.row.disposition === 'retain' ? '保留' : '弃置' }}</p>
+      <p v-if="reasonDetail.tag === '已锁定'">御魂已锁定，优先保留。</p>
+      <p v-else-if="reasonDetail.tag.startsWith('默认')">未命中强化或弃置规则，且无阵容提升证据，按本次分析的默认御魂处理设置{{ reasonDetail.row.disposition === 'retain' ? '保留' : '弃置' }}。</p>
+      <p v-else-if="reasonDetail.tag === '弃置捞回'">同时命中两类规则，强化规则优先，保留该御魂。</p>
+      <p v-else-if="reasonDetail.tag === '弃置规则' && reasonDetail.row.potentialTargets.length">存在阵容提升证据；当前弃置规则优先，仍判定弃置。</p>
+      <article v-for="rule in detailRules" :key="rule.id" class="reason-rule">
+        <h3>{{ rule.pool === 'enhance' ? '强化规则' : '弃置规则' }} · {{ rule.label }}</h3>
+        <dl>
+          <dt>套装</dt><dd>{{ rule.criteria.types.join('、') || '不限' }}</dd>
+          <dt>位置</dt><dd>{{ rule.criteria.positions.join('、') || '不限' }}</dd>
+          <dt>星级</dt><dd>{{ rule.criteria.stars.join('、') || '不限' }}</dd>
+          <dt>等级</dt><dd>{{ rule.criteria.levelRanges.join('、') || '不限' }}</dd>
+          <dt>主属性</dt><dd>{{ rule.criteria.mainStats.map(stat => STAT_LABELS[stat]).join('、') || '不限' }}</dd>
+          <dt>副属性</dt><dd>{{ rule.criteria.subStats.map(stat => `${stat.requirement === 'include' ? '包含' : '排除'}${STAT_LABELS[stat.stat]}`).join('、') || '不限' }}</dd>
+          <dt>副属性条数</dt><dd>{{ rule.criteria.subStatCounts.map(count => count === 'lessThan2' ? '不足2条' : `${count}条`).join('、') || '不限' }}</dd>
+          <dt>固有属性</dt><dd>{{ rule.criteria.intrinsicStats.map(stat => STAT_LABELS[stat]).join('、') || '不限' }}</dd>
+        </dl>
+      </article>
+    </section>
+  </div>
 </template>
+
+<style scoped>
+.default-disposition { display: flex; align-items: center; gap: 8px; }
+.default-disposition select { min-width: 80px; }
+.reason-dialog { background: white; color: #252525; width: min(560px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; padding: 20px; border-radius: 8px; }
+.reason-dialog header { display: flex; align-items: center; justify-content: space-between; }
+.reason-dialog h2 { font-size: 18px; margin: 0; }
+.reason-dialog h3 { font-size: 15px; overflow-wrap: anywhere; }
+.reason-rule { border-top: 1px solid #ddd; margin-top: 16px; }
+.reason-rule dl { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; font-size: 14px; }
+.reason-rule dd { margin: 0; overflow-wrap: anywhere; }
+</style>

@@ -250,6 +250,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const sceneDataImportRevision = ref(0);
   const templateIds = ref<Array<"zhaocai-speed" | "scattered-speed">>(["zhaocai-speed", "scattered-speed"]);
   const riskTier = ref<"tier0" | "tier1">("tier1");
+  const defaultDisposition = ref<"retain" | "discard">("retain");
   const budgetPerTenThousand = ref(1);
   const staticPolicy = ref<StaticRetentionPolicy>({ ...DEFAULT_POLICY });
   const existingFilterCode = ref("");
@@ -616,6 +617,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       snapshotSummary: snapshot.value,
       settings: {
         templateIds: templateIds.value,
+        defaultDisposition: defaultDisposition.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
@@ -670,7 +672,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   watch(
-    [snapshot, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
+    [snapshot, templateIds, riskTier, defaultDisposition, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
     scheduleSessionPersist,
     { deep: true }
   );
@@ -725,6 +727,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       snapshot.value = restoredSnapshot;
       templateIds.value = stored.session.settings.templateIds.filter((id): id is "zhaocai-speed" | "scattered-speed" => id === "zhaocai-speed" || id === "scattered-speed");
       riskTier.value = stored.session.settings.riskTier;
+      defaultDisposition.value = stored.session.settings.defaultDisposition ?? "retain";
       budgetPerTenThousand.value = stored.session.settings.budgetPerTenThousand;
       staticPolicy.value = { ...stored.session.settings.staticPolicy };
       existingFilterCode.value = stored.session.settings.existingFilterCode;
@@ -768,6 +771,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       teamCalculationPaused.value = stored.session.teamCalculationPaused === true || Object.values(teamCalculationProgress.value).some((entry) => entry.status === "pending");
       if (stored.session.analysis !== null) {
         analysis.value = await client.analyze({
+          defaultDisposition: defaultDisposition.value,
           templateIds: templateIds.value,
           riskTier: riskTier.value,
           budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
@@ -838,6 +842,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     try {
       const analysisStartedAt = now();
       const nextAnalysis = await client.analyze({
+        defaultDisposition: defaultDisposition.value,
         templateIds: templateIds.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
@@ -1445,7 +1450,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const subStatCounts = countOrder.filter((count) => input.subStatCounts.includes(count));
     if (input.pool !== "discard" && input.pool !== "enhance") throw new Error("预置规则池无效");
     if (label.length === 0) throw new Error("预置规则名称不能为空");
-    if (suits.length === 0) throw new Error("预置规则至少选择一个御魂套装");
+    const conditionValues = input.filter === undefined
+      ? [suits, positions, mainStats, requiredSubStats, subStatCounts]
+      : Object.values(input.filter);
+    if (conditionValues.every((values) => values.length === 0)) throw new Error("请至少设置一项筛选条件；御魂套装可以不限");
     if (positions.some((position) => !Number.isInteger(position) || position < 1 || position > 6)) throw new Error("预置规则位置无效");
     const normalized = {
       pool: input.pool,
@@ -1498,6 +1506,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     simulation.value = null;
     checklist.value = null;
     gateState.value = {};
+  }
+
+  function setDefaultDisposition(next: "retain" | "discard"): void {
+    if (defaultDisposition.value === next) return;
+    defaultDisposition.value = next;
+    invalidateAnalysisResults();
   }
 
   function setRiskTier(next: "tier0" | "tier1"): void {
@@ -1658,7 +1672,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         templateIds: templateIds.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
-        staticPolicy: staticPolicy.value
+        staticPolicy: staticPolicy.value,
+        defaultDisposition: defaultDisposition.value
       },
       analysisSummary: analysis.value
     };
@@ -1676,6 +1691,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     if (project === null) throw new Error("没有已保存的本地项目");
     templateIds.value = project.settings.templateIds.filter((id): id is "zhaocai-speed" | "scattered-speed" => id === "zhaocai-speed" || id === "scattered-speed");
     riskTier.value = project.settings.riskTier;
+    defaultDisposition.value = project.settings.defaultDisposition ?? "retain";
     budgetPerTenThousand.value = project.settings.budgetPerTenThousand;
     staticPolicy.value = project.settings.staticPolicy;
     staticPolicy.value = { ...staticPolicy.value, confirmed: true };
@@ -1860,6 +1876,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     targetViewState.value = null;
     targetCatalog.value = TARGET_CATALOG;
     staticPolicy.value = { ...DEFAULT_POLICY };
+    defaultDisposition.value = "retain";
     sessionReady = true;
     restoreCompleted.value = true;
     notice.value = "内存会话和本机自动保存已清空";
@@ -1882,7 +1899,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
     invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount, setTeamCalculationSchedulerDebugEnabled, clearTeamCalculationSchedulerDebugLog,
-    setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
+    defaultDisposition, setDefaultDisposition, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets
   };

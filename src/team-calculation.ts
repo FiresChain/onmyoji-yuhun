@@ -871,7 +871,7 @@ function calculateTarget(
     result: {
       entityIndex: target.entityIndex,
       shikigamiId: target.shikigamiId,
-      shikigamiName: hero.name,
+      shikigamiName: target.shikigamiName ?? hero.name,
       metricId: target.metricId,
       metricName: metricName(target.metricId),
       status: "success",

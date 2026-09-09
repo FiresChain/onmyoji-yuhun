@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { X } from "@lucide/vue";
 import { STAT_LABELS, type YuhunPotentialPieceDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
+import { shikigamiByHeroId } from "../manual-target-config.js";
 
 const props = withDefaults(defineProps<{ targets: readonly YuhunPotentialTarget[]; title?: string; compact?: boolean; referenceTitle?: string }>(), { compact: false });
 const emit = defineEmits<{ close: [] }>();
@@ -51,6 +52,16 @@ function strategyLabel(target: YuhunPotentialTarget): string {
   if (target.strategy === "embryo-comparison") return target.exactEmbryo ? "胚子对比" : "胚子属性类型对比";
   return target.statesEvaluated > 0 ? `强化上界 · ${target.statesEvaluated} 状态` : "强化上界";
 }
+
+function displayShikigamiName(target: YuhunPotentialTarget): string {
+  const raw = target.shikigamiName.trim();
+  const id = /^\d+$/.test(raw) ? Number(raw) : null;
+  return id === null ? raw || "未知式神" : shikigamiByHeroId(id)?.name ?? "未知式神";
+}
+
+function displayTeamLabel(target: YuhunPotentialTarget): string | null {
+  return /^\d+$/.test(target.teamLabel.trim()) ? null : target.teamLabel;
+}
 </script>
 
 <template>
@@ -60,7 +71,7 @@ function strategyLabel(target: YuhunPotentialTarget): string {
       <div class="potential-comparison-content">
         <div v-if="!props.compact" class="potential-target-list">
           <button v-for="(target, index) in targets" :key="`${target.teamLabel}-${target.shikigamiName}-${target.metricName}-${target.strategy}-${index}`" :class="{ active: selectedIndex === index }" @click="selectedIndex = index">
-            <strong>{{ target.teamLabel }}</strong><span>{{ target.shikigamiName }} · {{ target.metricName }}</span><small>{{ strategyLabel(target) }}<template v-if="target.position"> · {{ target.position }}号</template></small>
+            <strong>{{ displayShikigamiName(target) }}</strong><span>{{ target.metricName }}</span><small><template v-if="displayTeamLabel(target)">{{ displayTeamLabel(target) }} · </template>{{ strategyLabel(target) }}<template v-if="target.position"> · {{ target.position }}号</template></small>
           </button>
         </div>
         <template v-if="selected">

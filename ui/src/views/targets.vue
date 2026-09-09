@@ -1494,7 +1494,7 @@ function openCalculationCandidateComparison(candidate: TeamCalculationYuhunDTO):
     upperScore: evidence.upperScore,
     baselineScore: evidence.baselineScore
   }];
-  potentialComparisonTitle.value = `${entity.shikigamiName} · ${candidate.position}号御魂对比`;
+  potentialComparisonTitle.value = `${calculationEntityName(entity, target)} · ${candidate.position}号御魂对比`;
   potentialComparisonCompact.value = true;
 }
 
@@ -1581,7 +1581,7 @@ function openEntityPotentialComparison(target: ImportedTeamTarget, entity: TeamC
     upperScore: entry.upperScore,
     baselineScore: entry.baselineScore
   }));
-  potentialComparisonTitle.value = `${entity.shikigamiName} · ${entity.metricName} · 潜力御魂`;
+  potentialComparisonTitle.value = `${calculationEntityName(entity, target)} · ${entity.metricName} · 潜力御魂`;
 }
 
 async function copyTeamCalculationError(target: ImportedTeamTarget): Promise<void> {
@@ -2583,14 +2583,14 @@ function ruleSummary(rule: PresetRule): string {
       <header><div><span class="eyebrow">PRESET RULE</span><h2 id="preset-rule-title">{{ editingRuleId ? '编辑' : '添加' }}{{ rulePool === 'discard' ? '弃置' : '强化' }}规则</h2></div><button class="icon-button" title="关闭" @click="ruleOpen = false"><X :size="18" /></button></header>
       <div class="rule-form">
         <label class="rule-name"><span>规则名称</span><input v-model="ruleLabel" maxlength="80" placeholder="例如：针女输出胚子" /></label>
-        <section class="rule-field rule-yuhun-field"><div class="rule-yuhun-summary"><strong>御魂套装</strong><button type="button" data-testid="open-rule-yuhun-picker" @click="openRuleYuhunPicker"><Plus :size="15" />选择御魂</button></div><div class="rule-selected-yuhun"><span v-if="ruleSuits.length === 0" class="rule-selected-yuhun-empty">未选择御魂套装</span><span v-for="name in ruleSuits" v-else :key="name"><img v-if="ruleYuhunOption(name).image" :src="ruleYuhunOption(name).image!" :alt="ruleYuhunOption(name).label" /><i v-else>{{ ruleYuhunOption(name).placeholder }}</i><strong>{{ ruleYuhunOption(name).label }}</strong></span></div></section>
+        <section class="rule-field rule-yuhun-field"><div class="rule-yuhun-summary"><strong>御魂套装</strong><button type="button" data-testid="open-rule-yuhun-picker" @click="openRuleYuhunPicker"><Plus :size="15" />选择御魂</button></div><div class="rule-selected-yuhun"><span v-if="ruleSuits.length === 0" class="rule-selected-yuhun-empty">全部御魂套装</span><span v-for="name in ruleSuits" v-else :key="name"><img v-if="ruleYuhunOption(name).image" :src="ruleYuhunOption(name).image!" :alt="ruleYuhunOption(name).label" /><i v-else>{{ ruleYuhunOption(name).placeholder }}</i><strong>{{ ruleYuhunOption(name).label }}</strong></span></div></section>
         <section class="rule-field"><strong>位置</strong><div class="option-grid positions"><label v-for="position in 6" :key="position"><input type="checkbox" :checked="rulePositions.includes(position)" @change="rulePositions = toggleValue(rulePositions, position)" /><span>{{ position }}号</span></label></div></section>
         <section class="rule-field"><strong>主属性</strong><div class="option-grid"><label v-for="stat in statOptions" :key="stat.id"><input type="checkbox" :checked="ruleMainStats.includes(stat.id)" @change="ruleMainStats = toggleValue(ruleMainStats, stat.id)" /><span>{{ stat.label }}</span></label></div></section>
         <fieldset class="rule-field" data-testid="rule-intrinsic-field" :disabled="!hasSelectedBossRuleSuit"><legend>固有属性（首领御魂）</legend><div class="option-grid" data-testid="rule-intrinsic-stats"><label v-for="stat in intrinsicStatOptions" :key="stat.id"><input type="checkbox" :checked="ruleIntrinsicStats.includes(stat.id)" @change="ruleIntrinsicStats = toggleValue(ruleIntrinsicStats, stat.id)" /><span>{{ stat.label }}</span></label></div></fieldset>
         <section class="rule-field"><strong>副属性</strong><div class="rule-sub-stat-grid" data-testid="rule-sub-stats"><div v-for="stat in statOptions" :key="stat.id" class="rule-sub-stat-option"><span>{{ stat.label }}</span><button type="button" :data-testid="`rule-sub-stat-${stat.id}-include`" :class="{ selected: ruleSubStatRequirement(stat.id) === 'include' }" :aria-pressed="ruleSubStatRequirement(stat.id) === 'include'" :title="`${stat.label}：必须有`" :aria-label="`${stat.label}：必须有`" @click="setRuleSubStatRequirement(stat.id, 'include')"><Circle :size="14" /></button><button type="button" :data-testid="`rule-sub-stat-${stat.id}-exclude`" :class="{ selected: ruleSubStatRequirement(stat.id) === 'exclude' }" :aria-pressed="ruleSubStatRequirement(stat.id) === 'exclude'" :title="`${stat.label}：必须没有`" :aria-label="`${stat.label}：必须没有`" @click="setRuleSubStatRequirement(stat.id, 'exclude')"><X :size="15" /></button></div></div></section>
         <section class="rule-field"><strong>副属性数量</strong><div class="option-grid sub-stat-counts" data-testid="rule-sub-stat-counts"><label v-for="option in subStatCountOptions" :key="option.id"><input type="checkbox" :checked="ruleSubStatCounts.includes(option.id)" @change="ruleSubStatCounts = toggleValue(ruleSubStatCounts, option.id)" /><span>{{ option.label }}</span></label></div></section>
       </div>
-      <footer><span>保存后默认启用并进入{{ rulePool === 'discard' ? '弃置' : '强化' }}规则池</span><button class="primary" :disabled="ruleLabel.trim() === '' || ruleSuits.length === 0" @click="saveRule"><Save :size="17" />保存规则</button></footer>
+      <footer><span>未选择御魂套装表示不限套装；保存后默认启用并进入{{ rulePool === 'discard' ? '弃置' : '强化' }}规则池</span><button class="primary" :disabled="ruleLabel.trim() === ''" @click="saveRule"><Save :size="17" />保存规则</button></footer>
     </section>
   </div>
 
