@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Filter, Play, RefreshCw, X } from "@lucide/vue";
+import { FileJson, SlidersHorizontal, Filter, Play, RefreshCw, X } from "@lucide/vue";
+import { yuhunDisplayName, yuhunImage } from "../manual-target-config.js";
 import YuhunSuitPicker from "../components/YuhunSuitPicker.vue";
+import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
+import { emptyYuhunFilter } from "../yuhun-filter.js";
 import ExcelColumnFilter, { type ExcelFilterOption, type ExcelFilterValue } from "../components/ExcelColumnFilter.vue";
 import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
 import PotentialComparison from "../components/PotentialComparison.vue";
 import { useWorkbenchStore } from "../store.js";
 
 const store = useWorkbenchStore();
-const yuhunSearch = ref("");
+function formatStatValue(stat: StatId, value: number | undefined): string {
+  if (value === undefined) return "—";
+  const percent = ["attackPercent", "defensePercent", "hpPercent", "crit", "critDamage", "effectHit", "effectResist"].includes(stat);
+  return `+${(percent ? value * 100 : value).toFixed(2).replace(/\.?0+$/, "")}${percent ? "%" : ""}`;
+}
 const potentialComparisonTargets = ref<readonly YuhunPotentialTarget[] | null>(null);
 const potentialComparisonTitle = ref("");
 const reasonDetail = ref<{ row: YuhunDecisionRowDTO; tag: string } | null>(null);
@@ -33,17 +40,19 @@ const yuhunFilterColumns: readonly { key: YuhunFilterColumn; label: string }[] =
 
 const activeYuhunFilter = ref<YuhunFilterColumn | null>(null);
 const yuhunSuitFilter = ref<string[] | null>(null);
-const suitPickerOpen = ref(false);
-const suitDraft = ref<string[]>([]);
-function openSuitPicker(): void {
-  activeYuhunFilter.value = null;
-  suitDraft.value = [...(yuhunSuitFilter.value ?? store.yuhunDecisionFacets?.suits ?? [])];
-  suitPickerOpen.value = true;
+const inventoryFilterOpen = ref(false);
+const inventoryCriteria = ref(emptyYuhunFilter());
+const inventoryDraft = ref(emptyYuhunFilter());
+const inventoryFiltered = computed(() => Object.values(inventoryCriteria.value).some(values => values.length > 0));
+function openInventoryFilter(): void {
+  closeYuhunFilterMenu();
+  inventoryDraft.value = JSON.parse(JSON.stringify(inventoryCriteria.value));
+  inventoryFilterOpen.value = true;
 }
-function applySuitPicker(): void {
-  const all = store.yuhunDecisionFacets?.suits ?? [];
-  yuhunSuitFilter.value = all.every(name => suitDraft.value.includes(name)) ? null : [...suitDraft.value];
-  suitPickerOpen.value = false;
+function resetInventoryFilter(): void { inventoryDraft.value = emptyYuhunFilter(); }
+function applyInventoryFilter(): void {
+  inventoryCriteria.value = JSON.parse(JSON.stringify(inventoryDraft.value));
+  inventoryFilterOpen.value = false;
   void filterYuhun();
 }
 const yuhunPositionFilter = ref<number[] | null>(null);
@@ -53,9 +62,11 @@ const yuhunMainStatFilter = ref<StatId[] | null>(null);
 const yuhunSubStatFilter = ref<StatId[] | null>(null);
 const yuhunDispositionFilter = ref<Array<"discard" | "retain"> | null>(null);
 const yuhunReasonFilter = ref<string[] | null>(null);
+const reasonMode = ref<"or" | "and">("or");
 
 async function filterYuhun(page = 1): Promise<void> {
   await store.loadYuhunDecisions(page, {
+    criteria: JSON.parse(JSON.stringify(inventoryCriteria.value)),
     ...(yuhunSuitFilter.value === null ? {} : { suits: yuhunSuitFilter.value }),
     ...(yuhunPositionFilter.value === null ? {} : { positions: yuhunPositionFilter.value }),
     ...(yuhunStarFilter.value === null ? {} : { stars: yuhunStarFilter.value }),
@@ -63,8 +74,8 @@ async function filterYuhun(page = 1): Promise<void> {
     ...(yuhunMainStatFilter.value === null ? {} : { mainStats: yuhunMainStatFilter.value }),
     ...(yuhunSubStatFilter.value === null ? {} : { subStats: yuhunSubStatFilter.value }),
     ...(yuhunDispositionFilter.value === null ? {} : { dispositions: yuhunDispositionFilter.value }),
-    ...(yuhunReasonFilter.value === null ? {} : { reasons: yuhunReasonFilter.value }),
-    ...(yuhunSearch.value === "" ? {} : { search: yuhunSearch.value })
+    reasonMode: reasonMode.value,
+    ...(yuhunReasonFilter.value === null && reasonMode.value === "or" ? {} : { reasons: yuhunReasonFilter.value ?? store.yuhunDecisionFacets?.reasons ?? [] }),
   });
 }
 
@@ -173,15 +184,23 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
       <div data-testid="capacity-marked-discard"><span>标记弃置</span><strong>{{ store.analysis.markedDiscardProjection.discardCount.toLocaleString() }}</strong></div>
     </div>
     <section class="data-section yuhun-decision-section" @click="closeYuhunFilterMenu">
-      <div class="section-toolbar"><div><h2>单件御魂决策</h2><span>{{ store.yuhunDecisions?.total ?? 0 }} 件御魂 · 表头可多选筛选</span></div><div class="filters"><input v-model="yuhunSearch" placeholder="套装 / 原因" @keyup.enter="filterYuhun()" /></div></div>
+      <div class="section-toolbar"><div><h2>单件御魂决策</h2><span>{{ store.yuhunDecisions?.total ?? 0 }} 件御魂</span></div><div class="filters"><button class="inventory-filter-button" :class="{ active: inventoryFiltered }" :aria-pressed="inventoryFiltered" @click.stop="openInventoryFilter"><SlidersHorizontal :size="16" /><span>筛选</span><i v-if="inventoryFiltered" aria-label="已筛选" /></button></div></div>
       <div class="table-wrap"><table class="excel-table"><thead><tr>
-        <th v-for="column in yuhunFilterColumns" :key="column.key"><div class="excel-column-head"><span>{{ column.label }}</span><button v-if="column.key === 'suit'" class="icon-button" aria-label="筛选御魂套装" :class="{ active: yuhunSuitFilter !== null }" @click.stop="openSuitPicker"><Filter :size="14" /></button><ExcelColumnFilter v-else :label="column.label" :options="optionsFor(column.key)" :selected="selectedFor(column.key)" :open="activeYuhunFilter === column.key" @toggle-open="toggleYuhunFilterMenu(column.key)" @toggle="toggleYuhunFilter(column.key, $event)" @select-all="selectAllYuhunFilter(column.key)" @clear="clearYuhunFilter(column.key)" @apply="applyYuhunFilter" /></div></th>
-        </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td>{{ row.suit }}</td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td>{{ STAT_LABELS[row.mainStat] }}</td><td>{{ row.subStats.map((stat) => STAT_LABELS[stat]).join(' / ') || '—' }}</td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><div class="potential-strategy-tags"><button v-for="tag in row.reasonTags ?? [row.reason]" :key="tag" class="potential-open" @click.stop="openReason(row, tag)">{{ tag }}</button></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
+        <th v-for="column in yuhunFilterColumns" :key="column.key"><div class="excel-column-head"><span>{{ column.label }}</span><ExcelColumnFilter v-if="column.key === 'disposition' || column.key === 'reason'" :match-mode="column.key === 'reason' ? reasonMode : undefined" @update:match-mode="reasonMode = $event" :label="column.label" :options="optionsFor(column.key)" :selected="selectedFor(column.key)" :open="activeYuhunFilter === column.key" @toggle-open="toggleYuhunFilterMenu(column.key)" @toggle="toggleYuhunFilter(column.key, $event)" @select-all="selectAllYuhunFilter(column.key)" @clear="clearYuhunFilter(column.key)" @apply="applyYuhunFilter" /></div></th>
+        </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td><span class="inventory-suit"><img v-if="yuhunImage(row.suit)" :src="yuhunImage(row.suit)!" :alt="yuhunDisplayName(row.suit)" /><FileJson v-else :size="18" /><span>{{ yuhunDisplayName(row.suit) }}</span></span></td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td><div class="inventory-stat-list"><span class="inventory-stat"><small>{{ STAT_LABELS[row.mainStat] }}</small><strong>{{ formatStatValue(row.mainStat, row.mainValue) }}</strong></span><span v-for="stat in row.intrinsicStats" :key="stat.stat" class="inventory-stat intrinsic"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ formatStatValue(stat.stat, stat.value) }}</strong></span></div></td><td><div class="inventory-stat-list"><span v-for="stat in row.subStats" :key="stat" class="inventory-stat"><small>{{ STAT_LABELS[stat] }}</small><strong>{{ formatStatValue(stat, row.subStatValues?.find(entry => entry.stat === stat)?.value) }}</strong></span></div></td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><div class="potential-strategy-tags"><button v-for="tag in row.reasonTags ?? [row.reason]" :key="tag" class="potential-open" @click.stop="openReason(row, tag)">{{ tag }}</button></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
       <div class="pagination"><button :disabled="(store.yuhunDecisions?.page ?? 1)<=1" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)-1)">上一页</button><span>{{ store.yuhunDecisions?.page ?? 1 }} / {{ Math.max(1,Math.ceil((store.yuhunDecisions?.total ?? 0)/30)) }}</span><button :disabled="(store.yuhunDecisions?.page ?? 1)*30 >= (store.yuhunDecisions?.total ?? 0)" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)+1)">下一页</button></div>
     </section>
   </template>
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
-  <YuhunSuitPicker v-if="suitPickerOpen" :options="store.yuhunDecisionFacets?.suits ?? []" :selected="suitDraft" filter @change="suitDraft = $event" @close="suitPickerOpen = false" @apply="applySuitPicker" />
+  <div v-if="inventoryFilterOpen" class="modal-backdrop" @click.self="inventoryFilterOpen = false" @keydown.esc="inventoryFilterOpen = false">
+    <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="inventory-filter-title">
+      <header><h2 id="inventory-filter-title">筛选御魂</h2><button class="icon-button" aria-label="关闭" @click="inventoryFilterOpen = false"><X :size="18" /></button></header>
+      <div class="rule-form">
+        <YuhunConditionEditor v-model="inventoryDraft" />
+      </div>
+      <footer><button @click="resetInventoryFilter">重置</button><button class="primary" @click="applyInventoryFilter">应用</button></footer>
+    </section>
+  </div>
   <div v-if="reasonDetail" class="modal-backdrop" @click.self="reasonDetail = null" @keydown.esc="reasonDetail = null">
     <section class="reason-dialog" role="dialog" aria-modal="true" aria-labelledby="reason-title" tabindex="-1">
       <header><h2 id="reason-title">{{ reasonDetail.tag }}</h2><button autofocus aria-label="关闭" @click="reasonDetail = null"><X :size="18" /></button></header>
@@ -208,6 +227,9 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
 </template>
 
 <style scoped>
+.inventory-filter-button { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid #c7d0d0; border-radius: 4px; background: #fff; color: #334746; font-size: 12px; }
+.inventory-filter-button:hover, .inventory-filter-button.active { background: #e8f1ef; border-color: #638d85; }
+.inventory-filter-button i { width: 6px; height: 6px; border-radius: 50%; background: #357264; }
 .default-disposition { display: flex; align-items: center; gap: 8px; }
 .default-disposition select { min-width: 80px; }
 .reason-dialog { background: white; color: #252525; width: min(560px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; padding: 20px; border-radius: 8px; }

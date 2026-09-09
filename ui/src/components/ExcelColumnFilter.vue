@@ -15,6 +15,7 @@ const props = defineProps<{
   /** null means no filter; an empty array means explicitly no values selected. */
   readonly selected: readonly ExcelFilterValue[] | null;
   readonly open: boolean;
+  readonly matchMode?: "or" | "and" | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -23,6 +24,7 @@ const emit = defineEmits<{
   (event: "clear"): void;
   (event: "select-all"): void;
   (event: "apply"): void;
+  (event: "update:matchMode", value: "or" | "and"): void;
 }>();
 
 const search = ref("");
@@ -74,6 +76,7 @@ function isFiltered(): boolean {
       <div class="excel-filter-actions">
         <button type="button" @click="emit('select-all')"><Check :size="12" />全选</button>
         <button type="button" @click="emit('clear')">清空</button>
+        <select v-if="matchMode !== undefined" class="match-mode" aria-label="原因匹配模式" :value="matchMode" @change="emit('update:matchMode', ($event.target as HTMLSelectElement).value as 'or' | 'and')"><option value="or">OR</option><option value="and">AND</option></select>
       </div>
       <div class="excel-filter-options">
         <label v-for="option in visibleOptions" :key="valueKey(option.value)" class="excel-filter-option">
@@ -83,9 +86,13 @@ function isFiltered(): boolean {
         <span v-if="visibleOptions.length === 0" class="excel-filter-empty">没有匹配选项</span>
       </div>
       <footer>
-        <button type="button" @click="emit('select-all'); emit('apply')">全部显示</button>
+        <button type="button" @click="matchMode !== undefined && emit('update:matchMode', 'or'); emit('select-all'); emit('apply')">全部显示</button>
         <button class="primary" type="button" @click="emit('apply')">应用</button>
       </footer>
     </div>
   </div>
 </template>
+
+<style scoped>
+.match-mode { margin-left: auto; width: 68px; min-width: 68px; padding: 4px 6px; font-size: 12px; }
+</style>

@@ -916,6 +916,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   async function loadYuhunDecisions(page = 1, filters: {
+    criteria?: FilterCriteria;
     disposition?: "discard" | "retain";
     position?: number;
     suits?: readonly string[];
@@ -926,6 +927,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     subStats?: readonly StatId[];
     dispositions?: readonly ("discard" | "retain")[];
     reasons?: readonly string[];
+    reasonMode?: "or" | "and";
     search?: string;
   } = {}): Promise<void> {
     try {

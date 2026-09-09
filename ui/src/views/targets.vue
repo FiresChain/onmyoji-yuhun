@@ -71,6 +71,9 @@ import { formatTeamCalculationError } from "../team-calculation-errors.js";
 import ManualTargetEditor from "../components/ManualTargetEditor.vue";
 import PotentialComparison from "../components/PotentialComparison.vue";
 import YuhunSuitPicker from "../components/YuhunSuitPicker.vue";
+import RuleOptionGroup from "../components/RuleOptionGroup.vue";
+import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
+import { emptyYuhunFilter } from "../yuhun-filter.js";
 import {
   YUHUN_CATEGORY_OPTIONS,
   shikigamiByHeroId,
@@ -267,6 +270,7 @@ const pendingTeamSceneIdAssignment = ref<TeamSceneIdAssignmentRequest | null>(nu
 let nextCustomCatalogId = 1;
 
 const ruleOpen = ref(false);
+const ruleCriteria = ref<FilterCriteria>(emptyYuhunFilter());
 const editingRuleId = ref<string | null>(null);
 const rulePool = ref<PresetRulePool>("enhance");
 const ruleLabel = ref("");
@@ -275,6 +279,7 @@ const rulePositions = ref<number[]>([]);
 const ruleMainStats = ref<StatId[]>([]);
 const ruleSubStatRequirements = ref<Partial<Record<StatId, SubStatRequirement>>>({});
 const ruleSubStatCounts = ref<SubStatCount[]>([]);
+const ruleLevelRanges = ref<Array<"0-2" | "3-5" | "6-8" | "9-11" | "12-14" | "15">>([]);
 const ruleIntrinsicStats = ref<IntrinsicStatId[]>([]);
 const rulePreservedFilter = ref<FilterCriteria | null>(null);
 const ruleSource = ref<PresetRule["source"] | undefined>(undefined);
@@ -1882,8 +1887,10 @@ function resetRuleForm(pool: PresetRulePool, rule: PresetRule | null = null): vo
   }
   ruleSubStatRequirements.value = subStatRequirements;
   ruleSubStatCounts.value = [...(rule?.subStatCounts ?? [])];
+  ruleLevelRanges.value = [...(rule?.filter?.levelRanges ?? [])];
   ruleIntrinsicStats.value = [...(rule?.filter?.intrinsicStats ?? [])];
   rulePreservedFilter.value = rule?.filter ?? null;
+  ruleCriteria.value = structuredClone(rule?.filter ? JSON.parse(JSON.stringify(rule.filter)) : { ...emptyYuhunFilter(), types: [...ruleSuits.value], positions: [...rulePositions.value], mainStats: [...ruleMainStats.value], subStats: ruleSubStatFilters.value.map(entry => ({ ...entry })), subStatCounts: [...ruleSubStatCounts.value] });
   ruleSource.value = rule?.source;
   ruleYuhunPickerOpen.value = false;
   ruleYuhunSearch.value = "";
@@ -1930,22 +1937,8 @@ watch(hasSelectedBossRuleSuit, (hasBossSuit) => {
   if (!hasBossSuit) ruleIntrinsicStats.value = [];
 });
 
-function formFilterCriteria(): FilterCriteria | undefined {
-  const preserved = rulePreservedFilter.value;
-  const hasExcludedSubStat = ruleSubStatFilters.value.some((filter) => filter.requirement === "exclude");
-  if (preserved === null && ruleIntrinsicStats.value.length === 0 && !hasExcludedSubStat) return undefined;
-  return {
-    types: [...ruleSuits.value],
-    positions: [...rulePositions.value],
-    stars: [...(preserved?.stars ?? [])],
-    mainStats: [...ruleMainStats.value],
-    subStats: ruleSubStatFilters.value,
-    subStatCounts: [...ruleSubStatCounts.value],
-    levelRanges: [...(preserved?.levelRanges ?? [])],
-    intrinsicStats: hasSelectedBossRuleSuit.value ? [...ruleIntrinsicStats.value] : [],
-    unknownTypeBits: [...(preserved?.unknownTypeBits ?? [])],
-    unknownOptionBits: [...(preserved?.unknownOptionBits ?? [])]
-  };
+function formFilterCriteria(): FilterCriteria {
+  return JSON.parse(JSON.stringify(ruleCriteria.value)) as FilterCriteria;
 }
 
 function saveRule(): void {
@@ -1954,11 +1947,11 @@ function saveRule(): void {
     store.savePresetRule({
       pool: rulePool.value,
       label: ruleLabel.value,
-      suits: ruleSuits.value,
-      positions: rulePositions.value,
-      mainStats: ruleMainStats.value,
-      requiredSubStats: requiredRuleSubStats.value,
-      subStatCounts: ruleSubStatCounts.value,
+      suits: filter.types,
+      positions: filter.positions,
+      mainStats: filter.mainStats,
+      requiredSubStats: filter.subStats.filter(entry => entry.requirement === "include").map(entry => entry.stat),
+      subStatCounts: filter.subStatCounts,
       ...(filter === undefined ? {} : { filter }),
       ...(ruleSource.value === undefined ? {} : { source: ruleSource.value })
     }, editingRuleId.value);
@@ -2584,12 +2577,7 @@ function ruleSummary(rule: PresetRule): string {
       <header><div><span class="eyebrow">PRESET RULE</span><h2 id="preset-rule-title">{{ editingRuleId ? '编辑' : '添加' }}{{ rulePool === 'discard' ? '弃置' : '强化' }}规则</h2></div><button class="icon-button" title="关闭" @click="ruleOpen = false"><X :size="18" /></button></header>
       <div class="rule-form">
         <label class="rule-name"><span>规则名称</span><input v-model="ruleLabel" maxlength="80" placeholder="例如：针女输出胚子" /></label>
-        <section class="rule-field rule-yuhun-field"><div class="rule-yuhun-summary"><strong>御魂套装</strong><button type="button" data-testid="open-rule-yuhun-picker" @click="openRuleYuhunPicker"><Plus :size="15" />选择御魂</button></div><div class="rule-selected-yuhun"><span v-if="ruleSuits.length === 0" class="rule-selected-yuhun-empty">全部御魂套装</span><span v-for="name in ruleSuits" v-else :key="name"><img v-if="ruleYuhunOption(name).image" :src="ruleYuhunOption(name).image!" :alt="ruleYuhunOption(name).label" /><i v-else>{{ ruleYuhunOption(name).placeholder }}</i><strong>{{ ruleYuhunOption(name).label }}</strong></span></div></section>
-        <section class="rule-field"><strong>位置</strong><div class="option-grid positions"><label v-for="position in 6" :key="position"><input type="checkbox" :checked="rulePositions.includes(position)" @change="rulePositions = toggleValue(rulePositions, position)" /><span>{{ position }}号</span></label></div></section>
-        <section class="rule-field"><strong>主属性</strong><div class="option-grid"><label v-for="stat in statOptions" :key="stat.id"><input type="checkbox" :checked="ruleMainStats.includes(stat.id)" @change="ruleMainStats = toggleValue(ruleMainStats, stat.id)" /><span>{{ stat.label }}</span></label></div></section>
-        <fieldset class="rule-field" data-testid="rule-intrinsic-field" :disabled="!hasSelectedBossRuleSuit"><legend>固有属性（首领御魂）</legend><div class="option-grid" data-testid="rule-intrinsic-stats"><label v-for="stat in intrinsicStatOptions" :key="stat.id"><input type="checkbox" :checked="ruleIntrinsicStats.includes(stat.id)" @change="ruleIntrinsicStats = toggleValue(ruleIntrinsicStats, stat.id)" /><span>{{ stat.label }}</span></label></div></fieldset>
-        <section class="rule-field"><strong>副属性</strong><div class="rule-sub-stat-grid" data-testid="rule-sub-stats"><div v-for="stat in statOptions" :key="stat.id" class="rule-sub-stat-option"><span>{{ stat.label }}</span><button type="button" :data-testid="`rule-sub-stat-${stat.id}-include`" :class="{ selected: ruleSubStatRequirement(stat.id) === 'include' }" :aria-pressed="ruleSubStatRequirement(stat.id) === 'include'" :title="`${stat.label}：必须有`" :aria-label="`${stat.label}：必须有`" @click="setRuleSubStatRequirement(stat.id, 'include')"><Circle :size="14" /></button><button type="button" :data-testid="`rule-sub-stat-${stat.id}-exclude`" :class="{ selected: ruleSubStatRequirement(stat.id) === 'exclude' }" :aria-pressed="ruleSubStatRequirement(stat.id) === 'exclude'" :title="`${stat.label}：必须没有`" :aria-label="`${stat.label}：必须没有`" @click="setRuleSubStatRequirement(stat.id, 'exclude')"><X :size="15" /></button></div></div></section>
-        <section class="rule-field"><strong>副属性数量</strong><div class="option-grid sub-stat-counts" data-testid="rule-sub-stat-counts"><label v-for="option in subStatCountOptions" :key="option.id"><input type="checkbox" :checked="ruleSubStatCounts.includes(option.id)" @change="ruleSubStatCounts = toggleValue(ruleSubStatCounts, option.id)" /><span>{{ option.label }}</span></label></div></section>
+        <YuhunConditionEditor v-model="ruleCriteria" />
       </div>
       <footer><span>未选择御魂套装表示不限套装；保存后默认启用并进入{{ rulePool === 'discard' ? '弃置' : '强化' }}规则池</span><button class="primary" :disabled="ruleLabel.trim() === ''" @click="saveRule"><Save :size="17" />保存规则</button></footer>
     </section>

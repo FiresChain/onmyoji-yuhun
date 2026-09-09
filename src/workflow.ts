@@ -30,7 +30,8 @@ import {
   type YuhunTemplate
 } from "./templates.js";
 import { STAT_LABELS } from "./mappings.js";
-import type { StatId } from "./types.js";
+import type { FilterCriteria, StatId } from "./types.js";
+import { matchFilterShare } from "./matcher.js";
 import { parseGameSnapshot, type SnapshotHeroBase, type YyxYuhun } from "./yyx.js";
 import {
   buildYuhunDecisionRows,
@@ -218,6 +219,7 @@ export interface DecisionQuery {
 }
 
 export interface YuhunDecisionQuery {
+  readonly criteria?: FilterCriteria;
   readonly page?: number;
   readonly pageSize?: number;
   readonly disposition?: "discard" | "retain";
@@ -230,6 +232,7 @@ export interface YuhunDecisionQuery {
   readonly subStats?: readonly StatId[];
   readonly dispositions?: readonly ("discard" | "retain")[];
   readonly reasons?: readonly string[];
+  readonly reasonMode?: "or" | "and";
   readonly search?: string;
 }
 
@@ -797,6 +800,10 @@ export class YuhunWorkflow {
 
   queryYuhunDecisions(query: YuhunDecisionQuery = {}): PageDTO<YuhunDecisionRowDTO> {
     if (this.yuhunDecisions === null) workflowFailure("analysis", "ANALYSIS_REQUIRED", "请先运行账号分析");
+    const criteria = query.criteria;
+    const matched = criteria && Object.values(criteria).some(values => values.length > 0)
+      ? new Set(matchFilterShare({ format: "onmyoji-yuhun-filter", schemaVersion: 1, headerHex: "", planKind: "discard", planKindValue: 0, warnings: [], groups: [{ name: "筛选", raw: { typeMaskHex: "", optionMaskHex: "" }, criteria }] }, this.items ?? []).groups[0]?.matchedIds ?? [])
+      : null;
     const { page, pageSize, start } = pageBounds(query.page, query.pageSize);
     const search = query.search?.trim().toLocaleLowerCase() ?? "";
     const suits = query.suits === undefined ? null : new Set(query.suits);
@@ -808,6 +815,7 @@ export class YuhunWorkflow {
     const dispositions = query.dispositions === undefined ? null : new Set(query.dispositions);
     const reasons = query.reasons === undefined ? null : new Set(query.reasons);
     const filtered = this.yuhunDecisions.filter((entry) =>
+      (matched === null || matched.has(this.items?.[entry.row - 1]?.id ?? "")) &&
       (query.disposition === undefined || entry.disposition === query.disposition) &&
       (query.position === undefined || entry.position === query.position) &&
       (suits === null || suits.has(entry.suit)) &&
@@ -817,7 +825,9 @@ export class YuhunWorkflow {
       (mainStats === null || mainStats.has(entry.mainStat)) &&
       (subStats === null || entry.subStats.some((stat) => subStats.has(stat))) &&
       (dispositions === null || dispositions.has(entry.disposition)) &&
-      (reasons === null || (entry.reasonTags ?? [entry.reason]).some((tag) => reasons.has(tag))) &&
+      (reasons === null || (reasons.size > 0 && (query.reasonMode === "and"
+        ? [...reasons].every((tag) => (entry.reasonTags ?? [entry.reason]).includes(tag))
+        : (entry.reasonTags ?? [entry.reason]).some((tag) => reasons.has(tag))))) &&
       (search === "" || entry.suit.toLocaleLowerCase().includes(search) || (entry.reasonTags ?? [entry.reason]).some((tag) => tag.toLocaleLowerCase().includes(search)))
     );
     return { page, pageSize, total: filtered.length, rows: filtered.slice(start, start + pageSize) };

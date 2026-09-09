@@ -14,6 +14,8 @@ export interface AnalysisRuleInput {
 }
 
 export interface YuhunPotentialTarget {
+  readonly teamId?: string;
+  readonly entityIndex?: number;
   readonly position: number;
   readonly teamLabel: string;
   readonly shikigamiName: string;
@@ -52,6 +54,9 @@ export interface YuhunDecisionRowDTO {
   readonly level: number;
   readonly mainStat: StatId;
   readonly subStats: readonly StatId[];
+  readonly mainValue?: number;
+  readonly subStatValues?: readonly { stat: StatId; value: number }[];
+  readonly intrinsicStats?: readonly { stat: StatId; value: number }[];
   readonly initialSubStatCount: number | null;
   readonly locked: boolean;
   readonly garbage: boolean;
@@ -126,6 +131,8 @@ function potentialTargetsByItem(
           ? entity.pieces.find((item) => item.position === entry.position) ?? null
           : entity.pieces.find((item) => item.yuhunId === entry.referenceYuhunId) ?? null;
         const target: YuhunPotentialTarget = {
+          teamId: report.id,
+          entityIndex: entity.entityIndex,
           position: entry.position,
           teamLabel: report.label,
           shikigamiName: entity.shikigamiName,
@@ -144,8 +151,9 @@ function potentialTargetsByItem(
         const id = entry.yuhunId;
         const values = result.get(id) ?? [];
         const duplicate = values.some((value) =>
-          value.teamLabel === target.teamLabel &&
-          value.shikigamiName === target.shikigamiName &&
+          value.teamId === target.teamId &&
+          value.entityIndex === target.entityIndex &&
+          value.position === target.position &&
           value.metricName === target.metricName &&
           value.strategy === target.strategy
         );
@@ -208,6 +216,9 @@ export function buildYuhunDecisionRows(
       level: item.level,
       mainStat: item.mainStat,
       subStats: Object.keys(item.subStats) as StatId[],
+      mainValue: item.mainValue,
+      subStatValues: Object.entries(item.subStats).map(([stat, value]) => ({ stat: stat as StatId, value })),
+      intrinsicStats: Object.entries(item.intrinsicStats ?? {}).map(([stat, value]) => ({ stat: stat as StatId, value })),
       initialSubStatCount: item.initialSubStats === null ? null : Object.keys(item.initialSubStats).length,
       locked: item.lock,
       garbage: item.garbage,
