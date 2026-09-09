@@ -116,8 +116,9 @@ function potentialTargetsByItem(
         baselineScore: entity.score,
         exactEmbryo: false
       }));
-      if (evidence.length === 0) continue;
-      for (const entry of evidence) {
+      const improvementEvidence = evidence.filter((entry) => entry.strategy !== "candidate-build");
+      if (improvementEvidence.length === 0) continue;
+      for (const entry of improvementEvidence) {
         const reference = entry.strategy === "candidate-build"
           ? null
           : entry.referenceYuhunId === undefined || entry.referenceYuhunId === null

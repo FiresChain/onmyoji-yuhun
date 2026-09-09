@@ -20,7 +20,8 @@ import {
   type ManualShikigamiCalculationInput,
   type TeamCalculationProgress,
   type TeamCalculationReportDTO,
-  type TeamCalculationRequest
+  type TeamCalculationRequest,
+  type TeamCalculationYuhunDTO
 } from "./team-calculation.js";
 import {
   SCATTERED_SPEED_TEMPLATE,
@@ -28,6 +29,7 @@ import {
   type RiskTier,
   type YuhunTemplate
 } from "./templates.js";
+import { STAT_LABELS } from "./mappings.js";
 import type { StatId } from "./types.js";
 import { parseGameSnapshot, type SnapshotHeroBase, type YyxYuhun } from "./yyx.js";
 import {
@@ -700,6 +702,24 @@ export class YuhunWorkflow {
       garbage: item.garbage
     }));
     return { page, pageSize, total: filtered.length, rows };
+  }
+
+  queryYuhunDetails(ids: readonly string[]): readonly TeamCalculationYuhunDTO[] {
+    if (this.items === null) workflowFailure("snapshot", "SNAPSHOT_REQUIRED", "请先导入 yyx 快照");
+    const requested = new Set(ids);
+    const statEntries = (stats: Partial<Record<StatId, number>>) => Object.entries(stats).map(([stat, value]) => ({ stat: stat as StatId, value }));
+    return this.items.filter((item) => requested.has(item.id)).map((item) => ({
+      yuhunId: item.id,
+      position: item.position,
+      suit: item.name,
+      mainStat: item.mainStat,
+      mainStatLabel: STAT_LABELS[item.mainStat],
+      mainValue: item.mainValue,
+      level: item.level,
+      star: item.star,
+      subStats: statEntries(item.subStats),
+      intrinsicStats: statEntries(item.intrinsicStats)
+    }));
   }
 
   queryDecisions(query: DecisionQuery = {}): PageDTO<SpeedCategoryDecision> {

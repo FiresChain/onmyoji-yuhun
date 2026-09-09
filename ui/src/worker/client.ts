@@ -15,6 +15,7 @@ import type {
   TeamCalculationReportDTO,
   TeamCalculationRequest,
   TeamCalculationWorkEstimate,
+  TeamCalculationYuhunDTO,
   YuhunDecisionFacetsDTO,
   YuhunDecisionQuery,
   YuhunDecisionRowDTO,
@@ -311,6 +312,10 @@ export class WorkflowClient {
 
   queryInventory(query: InventoryQuery): Promise<PageDTO<InventoryRowDTO>> {
     return this.call("queryInventory", [query]);
+  }
+
+  queryYuhunDetails(ids: readonly string[]): Promise<readonly TeamCalculationYuhunDTO[]> {
+    return this.call("queryYuhunDetails", [ids]);
   }
 
   queryDecisions(query: DecisionQuery): Promise<PageDTO<SpeedCategoryDecision>> {

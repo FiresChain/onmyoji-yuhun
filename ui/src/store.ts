@@ -18,6 +18,7 @@ import type {
   FilterCriteria,
   TeamCalculationReportDTO,
   TeamCalculationRequest,
+  TeamCalculationYuhunDTO,
   TeamCodeInspectionDTO,
   YuhunDecisionFacetsDTO,
   YuhunDecisionRowDTO,
@@ -815,6 +816,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     } catch (reason) {
       fail(reason);
     }
+  }
+
+  function queryYuhunDetails(ids: readonly string[]): Promise<readonly TeamCalculationYuhunDTO[]> {
+    return client.queryYuhunDetails(ids);
   }
 
   async function runAnalysis(): Promise<void> {
@@ -1872,7 +1877,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
     performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount, teamCalculationSchedulerDebugEnabled, teamCalculationSchedulerDebugLog,
-    importSnapshot, loadInventory, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
+    importSnapshot, loadInventory, queryYuhunDetails, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,

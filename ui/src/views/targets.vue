@@ -4,7 +4,6 @@ import {
   Check,
   Calculator,
   Circle,
-  ChevronDown,
   ChevronRight,
   CircleHelp,
   Clipboard,
@@ -44,6 +43,7 @@ import {
   type SubStatRequirement,
   type TeamCalculationEntityDTO,
   type TeamCalculationPieceDTO,
+  type TeamCalculationYuhunDTO,
   type YuhunPotentialPieceDTO,
   type YuhunPotentialTarget,
   type TeamCodeInspectionDTO
@@ -141,6 +141,13 @@ const teamCalculationFilter = ref<"all" | "enabled" | "disabled" | "completed" |
 const teamProgressCarouselIndex = ref(0);
 const potentialComparisonTargets = ref<readonly YuhunPotentialTarget[] | null>(null);
 const potentialComparisonTitle = ref("");
+const potentialComparisonCompact = ref(false);
+const calculationDetailTargetId = ref<string | null>(null);
+const calculationDetailEntityIndex = ref<number | null>(null);
+const calculationDetailPosition = ref(1);
+const calculationDetailPieces = ref<ReadonlyMap<string, TeamCalculationYuhunDTO>>(new Map());
+const calculationDetailCandidateId = ref<string | null>(null);
+const calculationDetailCandidatePage = ref(1);
 let teamProgressRotationTimer: ReturnType<typeof setInterval> | null = null;
 
 const importOpen = ref(false);
@@ -1432,6 +1439,100 @@ function calculationSuitSummary(entity: TeamCalculationEntityDTO): string {
   return completedSets.join(" + ") || "散件";
 }
 
+const calculationDetailTarget = computed(() => store.teamTargets.find((target) => target.id === calculationDetailTargetId.value) ?? null);
+const calculationDetailReport = computed(() => calculationDetailTarget.value === null ? null : store.teamCalculationFor(calculationDetailTarget.value.id));
+const calculationDetailEntity = computed(() => calculationDetailReport.value?.entities.find((entity) => entity.entityIndex === calculationDetailEntityIndex.value) ?? calculationDetailReport.value?.entities[0] ?? null);
+const calculationDetailPiece = computed(() => {
+  const entity = calculationDetailEntity.value;
+  const piece = entity?.pieces.find((item) => item.position === calculationDetailPosition.value) ?? null;
+  if (piece === null || piece.mainValue !== undefined) return piece;
+  return entity?.potentialYuhunDetails?.find((item) => item.yuhunId === piece.yuhunId) ?? calculationDetailPieces.value.get(piece.yuhunId ?? "") ?? piece;
+});
+const calculationDetailCandidates = computed(() => {
+  const entity = calculationDetailEntity.value;
+  if (entity === null) return [];
+  const ids = entity.potentialEvidence === undefined
+    ? entity.potentialYuhunIds ?? []
+    : entity.potentialEvidence
+      .filter((item) => item.strategy !== "candidate-build" && item.position === calculationDetailPosition.value)
+      .map((item) => item.yuhunId);
+  return [...new Set(ids)].flatMap((id) => {
+    const item = entity.potentialYuhunDetails?.find((detail) => detail.yuhunId === id) ?? calculationDetailPieces.value.get(id);
+    return item?.position === calculationDetailPosition.value ? [item] : [];
+  });
+});
+const calculationDetailCandidatePageCount = computed(() => Math.max(1, Math.ceil(calculationDetailCandidates.value.length / 12)));
+const calculationDetailCandidatePageItems = computed(() => calculationDetailCandidates.value.slice((calculationDetailCandidatePage.value - 1) * 12, calculationDetailCandidatePage.value * 12));
+const calculationDisplayedPiece = computed(() => calculationDetailCandidates.value.find((item) => item.yuhunId === calculationDetailCandidateId.value) ?? calculationDetailPiece.value);
+
+function selectCalculationPosition(position: number): void {
+  calculationDetailPosition.value = position;
+  calculationDetailCandidateId.value = null;
+  calculationDetailCandidatePage.value = 1;
+}
+
+function openCalculationCandidateComparison(candidate: TeamCalculationYuhunDTO): void {
+  const entity = calculationDetailEntity.value;
+  const target = calculationDetailTarget.value;
+  const reference = calculationDetailPiece.value;
+  if (entity === null || target === null || reference === null) return;
+  const evidence = entity.potentialEvidence?.find((item) => item.yuhunId === candidate.yuhunId && item.position === candidate.position);
+  if (evidence === undefined) return;
+  potentialComparisonTargets.value = [{
+    position: candidate.position,
+    teamLabel: target.label,
+    shikigamiName: entity.shikigamiName,
+    metricName: entity.metricName,
+    score: entity.score,
+    strategy: evidence.strategy,
+    statesEvaluated: evidence.statesEvaluated,
+    referenceSuit: evidence.referenceSuit,
+    referenceLevel: evidence.referenceLevel,
+    exactEmbryo: evidence.exactEmbryo,
+    candidate: potentialComparisonPiece(candidate),
+    reference: potentialComparisonPiece(reference),
+    upperScore: evidence.upperScore,
+    baselineScore: evidence.baselineScore
+  }];
+  potentialComparisonTitle.value = `${entity.shikigamiName} · ${candidate.position}号御魂对比`;
+  potentialComparisonCompact.value = true;
+}
+
+async function loadCalculationDetailPieces(entity: TeamCalculationEntityDTO | undefined): Promise<void> {
+  const ids = entity === undefined ? [] : [...entity.pieces, ...(entity.potentialYuhunDetails ?? [])].flatMap((piece) => piece.mainValue === undefined && piece.yuhunId ? [piece.yuhunId] : []);
+  if (entity?.potentialYuhunDetails === undefined) ids.push(...(entity?.potentialYuhunIds ?? []));
+  if (ids.length === 0) return;
+  const details = await store.queryYuhunDetails(ids);
+  calculationDetailPieces.value = new Map([...calculationDetailPieces.value, ...details.map((item) => [item.yuhunId, item] as const)]);
+}
+
+function openCalculationDetail(target: ImportedTeamTarget, entities: readonly TeamCalculationEntityDTO[]): void {
+  calculationDetailTargetId.value = target.id;
+  calculationDetailEntityIndex.value = entities.find((entity) => entity.status === "success")?.entityIndex ?? entities[0]?.entityIndex ?? null;
+  calculationDetailPosition.value = 1;
+  calculationDetailCandidateId.value = null;
+  calculationDetailCandidatePage.value = 1;
+  void loadCalculationDetailPieces(entities.find((entity) => entity.entityIndex === calculationDetailEntityIndex.value));
+}
+
+function closeCalculationDetail(): void {
+  calculationDetailTargetId.value = null;
+  calculationDetailEntityIndex.value = null;
+}
+
+function selectCalculationEntity(entity: TeamCalculationEntityDTO): void {
+  calculationDetailEntityIndex.value = entity.entityIndex;
+  calculationDetailPosition.value = entity.pieces[0]?.position ?? 1;
+  calculationDetailCandidateId.value = null;
+  calculationDetailCandidatePage.value = 1;
+  void loadCalculationDetailPieces(entity);
+}
+
+function pieceStatValue(stat: { readonly stat: StatId; readonly value: number }): string {
+  const percentStats: readonly StatId[] = ["attackPercent", "hpPercent", "defensePercent", "crit", "critDamage", "effectHit", "effectResist"];
+  return percentStats.includes(stat.stat) ? `${(stat.value * 100).toFixed(1).replace(/\.0$/, "")}%` : stat.value.toFixed(1).replace(/\.0$/, "");
+}
+
 function potentialComparisonPiece(item: TeamCalculationPieceDTO | null): YuhunPotentialPieceDTO | null {
   if (item === null) return null;
   return {
@@ -2040,8 +2141,8 @@ function ruleSummary(rule: PresetRule): string {
                 </div>
                 <template v-for="report in [store.teamCalculationFor(target.id)]" :key="target.id">
                   <section v-if="report" class="team-calculation-results" aria-label="御魂计算结果">
-                    <details class="team-calculation-details">
-                      <summary class="team-calculation-summary">
+                    <div class="team-calculation-details">
+                      <button class="team-calculation-summary" type="button" data-testid="open-team-calculation-detail" @click="openCalculationDetail(target, report.entities)">
                         <span class="team-calculation-summary-roster">
                           <span v-for="entity in report.entities" :key="entity.entityIndex" class="team-calculation-member-summary">
                             <span class="team-calculation-member-avatar"><img v-if="shikigamiImage(entity.shikigamiId ?? 0)" :src="shikigamiImage(entity.shikigamiId ?? 0)!" :alt="calculationEntityName(entity, target)" /><span v-else>{{ calculationEntityName(entity, target).slice(0, 1) }}</span></span>
@@ -2053,22 +2154,9 @@ function ruleSummary(rule: PresetRule): string {
                             </span>
                           </span>
                         </span>
-                        <span class="team-calculation-summary-action">查看队伍详情 <ChevronDown :size="15" /></span>
-                      </summary>
-                      <div class="calculation-entity-list">
-                        <article v-for="entity in report.entities" :key="entity.entityIndex" class="calculation-entity" :class="`status-${entity.status}`">
-                          <header><div class="calculation-entity-heading"><span class="calculation-entity-avatar"><img v-if="shikigamiImage(entity.shikigamiId ?? 0)" :src="shikigamiImage(entity.shikigamiId ?? 0)!" :alt="calculationEntityName(entity, target)" /><span v-else>{{ calculationEntityName(entity, target).slice(0, 1) }}</span></span><div><span>槽位 {{ entity.entityIndex }}</span><h4>{{ calculationEntityName(entity, target) }}</h4></div></div><span class="tag" :class="entity.status === 'success' ? 'success-tag' : entity.status === 'unsupported' ? 'warning-tag' : 'neutral'">{{ calculationStatusLabel(entity) }}</span></header>
-                          <div v-if="entity.status === 'success' && entity.panel" class="calculation-body">
-                            <div class="calculation-score"><span>{{ entity.metricName }}</span><strong>{{ calculationScore(entity) }}</strong><small>{{ calculationSuitSummary(entity) }}</small></div>
-                            <div class="calculation-panel"><span v-for="stat in panelStatEntries(entity.panel)" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
-                            <div class="calculation-pieces"><span v-for="piece in entity.pieces" :key="piece.position"><small>{{ piece.position }}号 · {{ piece.mainStatLabel }}</small><strong>{{ piece.suit }}</strong></span></div>
-                            <button v-if="(entity.potentialEvidence?.length ?? entity.potentialYuhunIds?.length ?? 0) > 0" class="potential-entity-open" @click.stop="openEntityPotentialComparison(target, entity)"><GitCompareArrows :size="14" />查看哪些御魂可以提升</button>
-                          </div>
-                          <p v-else>{{ entity.message }}</p>
-                          <details v-if="entity.constraints.length > 0"><summary>约束 {{ entity.constraints.length }} 项</summary><span>{{ entity.constraints.join(' · ') }}</span></details>
-                        </article>
-                      </div>
-                    </details>
+                        <span class="team-calculation-summary-action">查看队伍详情 <ChevronRight :size="15" /></span>
+                      </button>
+                    </div>
                   </section>
                 </template>
               </article>
@@ -2278,6 +2366,52 @@ function ruleSummary(rule: PresetRule): string {
     </section>
   </div>
 
+  <div v-if="calculationDetailTarget && calculationDetailReport" class="modal-backdrop calculation-detail-backdrop" @click.self="closeCalculationDetail" @keydown.esc="closeCalculationDetail">
+    <section class="calculation-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="calculation-detail-title">
+      <header><div><span>YUHUN LOADOUT</span><h2 id="calculation-detail-title">{{ calculationDetailTarget.label }}</h2></div><button class="icon-button" title="关闭队伍详情" @click="closeCalculationDetail"><X :size="18" /></button></header>
+      <nav class="calculation-detail-roster" aria-label="选择式神">
+        <button v-for="entity in calculationDetailReport.entities" :key="entity.entityIndex" :class="{ active: entity.entityIndex === calculationDetailEntity?.entityIndex }" @click="selectCalculationEntity(entity)">
+          <span><img v-if="shikigamiImage(entity.shikigamiId ?? 0)" :src="shikigamiImage(entity.shikigamiId ?? 0)!" :alt="calculationEntityName(entity, calculationDetailTarget)" /><i v-else>{{ calculationEntityName(entity, calculationDetailTarget).slice(0, 1) }}</i></span>
+          <strong>{{ calculationEntityName(entity, calculationDetailTarget) }}</strong><small>{{ calculationStatusLabel(entity) }}</small>
+        </button>
+      </nav>
+      <div v-if="calculationDetailEntity" class="calculation-detail-content">
+        <section class="yuhun-wheel-panel">
+          <div class="yuhun-wheel">
+            <button v-for="position in 6" :key="position" class="yuhun-wheel-slot" :class="[`position-${position}`, { active: calculationDetailPosition === position && calculationDetailCandidateId === null }]" :disabled="!calculationDetailEntity.pieces.some((piece) => piece.position === position)" @click="selectCalculationPosition(position)">
+              <template v-for="piece in [calculationDetailEntity.pieces.find((item) => item.position === position)]" :key="position">
+                <img v-if="piece && yuhunImage(piece.suit)" :src="yuhunImage(piece.suit)!" :alt="piece.suit" /><span v-else>{{ piece ? yuhunPlaceholder(piece.suit) : position }}</span><small v-if="piece">+{{ piece.level }}</small>
+              </template>
+            </button>
+            <div class="yuhun-wheel-center"><img v-if="shikigamiImage(calculationDetailEntity.shikigamiId ?? 0)" :src="shikigamiImage(calculationDetailEntity.shikigamiId ?? 0)!" :alt="calculationEntityName(calculationDetailEntity, calculationDetailTarget)" /><span v-else>{{ calculationEntityName(calculationDetailEntity, calculationDetailTarget).slice(0, 1) }}</span><strong>{{ calculationEntityName(calculationDetailEntity, calculationDetailTarget) }}</strong></div>
+          </div>
+          <div class="yuhun-build-summary"><span><small>{{ calculationDetailEntity.metricName }}</small><strong>{{ calculationScore(calculationDetailEntity) }}</strong></span><span><small>套装</small><strong>{{ calculationSuitSummary(calculationDetailEntity) }}</strong></span></div>
+        </section>
+        <aside class="yuhun-detail-panel">
+          <template v-if="calculationDisplayedPiece">
+            <header><span>{{ calculationDisplayedPiece.position }}号位{{ calculationDetailCandidateId === null ? '' : ' · 候选御魂' }}</span><strong>{{ calculationDisplayedPiece.suit }}</strong><small>{{ calculationDisplayedPiece.star }}星 · +{{ calculationDisplayedPiece.level }}</small></header>
+            <div class="yuhun-main-stat"><span>{{ calculationDisplayedPiece.mainStatLabel }}</span><strong>{{ calculationDisplayedPiece.mainValue === undefined ? '-' : pieceStatValue({ stat: calculationDisplayedPiece.mainStat, value: calculationDisplayedPiece.mainValue }) }}</strong></div>
+            <div class="yuhun-sub-stats"><span v-for="stat in calculationDisplayedPiece.intrinsicStats" :key="`intrinsic-${stat.stat}`"><small>{{ STAT_LABELS[stat.stat] }}（固有）</small><strong>{{ pieceStatValue(stat) }}</strong></span><span v-for="stat in calculationDisplayedPiece.subStats" :key="stat.stat"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ pieceStatValue(stat) }}</strong></span></div>
+          </template>
+          <p v-else>这个位置没有装配御魂。</p>
+          <section class="yuhun-candidate-browser" aria-label="可提升御魂">
+            <div v-if="calculationDetailCandidatePageItems.length > 0" class="yuhun-candidate-grid">
+              <button v-for="item in calculationDetailCandidatePageItems" :key="item.yuhunId" :class="{ active: item.yuhunId === calculationDetailCandidateId }" :title="`${item.suit} · ${item.position}号 · +${item.level}`" @click="openCalculationCandidateComparison(item)">
+                <img v-if="yuhunImage(item.suit)" :src="yuhunImage(item.suit)!" :alt="item.suit" /><span v-else>{{ yuhunPlaceholder(item.suit) }}</span><small>+{{ item.level }}</small>
+              </button>
+            </div>
+            <p v-else>当前 {{ calculationDetailPosition }} 号位没有可提升御魂。</p>
+            <nav v-if="calculationDetailCandidates.length > 0" class="yuhun-candidate-pagination" aria-label="可提升御魂分页"><button title="上一页" :disabled="calculationDetailCandidatePage === 1" @click="calculationDetailCandidatePage--"><ChevronRight class="previous" :size="14" /></button><span>{{ calculationDetailCandidatePage }} / {{ calculationDetailCandidatePageCount }}</span><button title="下一页" :disabled="calculationDetailCandidatePage === calculationDetailCandidatePageCount" @click="calculationDetailCandidatePage++"><ChevronRight :size="14" /></button></nav>
+          </section>
+        </aside>
+        <footer class="yuhun-equipped-panel">
+          <div v-if="calculationDetailEntity.panel" class="yuhun-panel-stats"><span v-for="stat in panelStatEntries(calculationDetailEntity.panel)" :key="stat.label"><small>{{ stat.label }}</small><strong>{{ stat.value }}</strong></span></div>
+          <p v-else>{{ calculationDetailEntity.message }}</p>
+        </footer>
+      </div>
+    </section>
+  </div>
+
   <div
     v-if="pendingTeamTargetDelete"
     class="catalog-delete-overlay team-delete-overlay"
@@ -2474,5 +2608,5 @@ function ruleSummary(rule: PresetRule): string {
       <footer><span>已选择 {{ ruleSuits.length }} 个御魂套装</span><button class="primary" @click="ruleYuhunPickerOpen = false">完成</button></footer>
     </section>
   </div>
-  <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
+  <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" :compact="potentialComparisonCompact" reference-title="当前装配御魂" @close="potentialComparisonTargets = null; potentialComparisonCompact = false" />
 </template>
