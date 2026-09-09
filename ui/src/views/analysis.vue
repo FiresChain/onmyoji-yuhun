@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Play, RefreshCw, X } from "@lucide/vue";
+import { Filter, Play, RefreshCw, X } from "@lucide/vue";
+import YuhunSuitPicker from "../components/YuhunSuitPicker.vue";
 import ExcelColumnFilter, { type ExcelFilterOption, type ExcelFilterValue } from "../components/ExcelColumnFilter.vue";
 import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
 import PotentialComparison from "../components/PotentialComparison.vue";
@@ -32,6 +33,19 @@ const yuhunFilterColumns: readonly { key: YuhunFilterColumn; label: string }[] =
 
 const activeYuhunFilter = ref<YuhunFilterColumn | null>(null);
 const yuhunSuitFilter = ref<string[] | null>(null);
+const suitPickerOpen = ref(false);
+const suitDraft = ref<string[]>([]);
+function openSuitPicker(): void {
+  activeYuhunFilter.value = null;
+  suitDraft.value = [...(yuhunSuitFilter.value ?? store.yuhunDecisionFacets?.suits ?? [])];
+  suitPickerOpen.value = true;
+}
+function applySuitPicker(): void {
+  const all = store.yuhunDecisionFacets?.suits ?? [];
+  yuhunSuitFilter.value = all.every(name => suitDraft.value.includes(name)) ? null : [...suitDraft.value];
+  suitPickerOpen.value = false;
+  void filterYuhun();
+}
 const yuhunPositionFilter = ref<number[] | null>(null);
 const yuhunStarFilter = ref<number[] | null>(null);
 const yuhunLevelFilter = ref<number[] | null>(null);
@@ -161,12 +175,13 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
     <section class="data-section yuhun-decision-section" @click="closeYuhunFilterMenu">
       <div class="section-toolbar"><div><h2>单件御魂决策</h2><span>{{ store.yuhunDecisions?.total ?? 0 }} 件御魂 · 表头可多选筛选</span></div><div class="filters"><input v-model="yuhunSearch" placeholder="套装 / 原因" @keyup.enter="filterYuhun()" /></div></div>
       <div class="table-wrap"><table class="excel-table"><thead><tr>
-        <th v-for="column in yuhunFilterColumns" :key="column.key"><div class="excel-column-head"><span>{{ column.label }}</span><ExcelColumnFilter :label="column.label" :options="optionsFor(column.key)" :selected="selectedFor(column.key)" :open="activeYuhunFilter === column.key" @toggle-open="toggleYuhunFilterMenu(column.key)" @toggle="toggleYuhunFilter(column.key, $event)" @select-all="selectAllYuhunFilter(column.key)" @clear="clearYuhunFilter(column.key)" @apply="applyYuhunFilter" /></div></th>
+        <th v-for="column in yuhunFilterColumns" :key="column.key"><div class="excel-column-head"><span>{{ column.label }}</span><button v-if="column.key === 'suit'" class="icon-button" aria-label="筛选御魂套装" :class="{ active: yuhunSuitFilter !== null }" @click.stop="openSuitPicker"><Filter :size="14" /></button><ExcelColumnFilter v-else :label="column.label" :options="optionsFor(column.key)" :selected="selectedFor(column.key)" :open="activeYuhunFilter === column.key" @toggle-open="toggleYuhunFilterMenu(column.key)" @toggle="toggleYuhunFilter(column.key, $event)" @select-all="selectAllYuhunFilter(column.key)" @clear="clearYuhunFilter(column.key)" @apply="applyYuhunFilter" /></div></th>
         </tr></thead><tbody><tr v-for="row in store.yuhunDecisions?.rows" :key="row.row"><td>{{ row.suit }}</td><td>{{ row.position }}号</td><td>{{ row.star }}星</td><td>+{{ row.level }}</td><td>{{ STAT_LABELS[row.mainStat] }}</td><td>{{ row.subStats.map((stat) => STAT_LABELS[stat]).join(' / ') || '—' }}</td><td><span class="tag" :class="row.disposition === 'discard' ? 'danger-tag' : 'success-tag'">{{ row.disposition === 'discard' ? '弃置' : '保留' }}</span></td><td class="reason-cell"><div class="potential-strategy-tags"><button v-for="tag in row.reasonTags ?? [row.reason]" :key="tag" class="potential-open" @click.stop="openReason(row, tag)">{{ tag }}</button></div></td></tr><tr v-if="store.yuhunDecisions?.rows.length === 0"><td colspan="8" class="empty-cell">没有符合当前筛选条件的御魂</td></tr></tbody></table></div>
       <div class="pagination"><button :disabled="(store.yuhunDecisions?.page ?? 1)<=1" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)-1)">上一页</button><span>{{ store.yuhunDecisions?.page ?? 1 }} / {{ Math.max(1,Math.ceil((store.yuhunDecisions?.total ?? 0)/30)) }}</span><button :disabled="(store.yuhunDecisions?.page ?? 1)*30 >= (store.yuhunDecisions?.total ?? 0)" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)+1)">下一页</button></div>
     </section>
   </template>
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
+  <YuhunSuitPicker v-if="suitPickerOpen" :options="store.yuhunDecisionFacets?.suits ?? []" :selected="suitDraft" filter @change="suitDraft = $event" @close="suitPickerOpen = false" @apply="applySuitPicker" />
   <div v-if="reasonDetail" class="modal-backdrop" @click.self="reasonDetail = null" @keydown.esc="reasonDetail = null">
     <section class="reason-dialog" role="dialog" aria-modal="true" aria-labelledby="reason-title" tabindex="-1">
       <header><h2 id="reason-title">{{ reasonDetail.tag }}</h2><button autofocus aria-label="关闭" @click="reasonDetail = null"><X :size="18" /></button></header>
@@ -174,7 +189,7 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
       <p v-if="reasonDetail.tag === '已锁定'">御魂已锁定，优先保留。</p>
       <p v-else-if="reasonDetail.tag.startsWith('默认')">未命中强化或弃置规则，且无阵容提升证据，按本次分析的默认御魂处理设置{{ reasonDetail.row.disposition === 'retain' ? '保留' : '弃置' }}。</p>
       <p v-else-if="reasonDetail.tag === '弃置捞回'">同时命中两类规则，强化规则优先，保留该御魂。</p>
-      <p v-else-if="reasonDetail.tag === '弃置规则' && reasonDetail.row.potentialTargets.length">存在阵容提升证据；当前弃置规则优先，仍判定弃置。</p>
+      <p v-else-if="reasonDetail.tag === '弃置规则' && reasonDetail.row.potentialTargets.length">命中弃置规则，但存在阵容提升证据，因此保留。</p>
       <article v-for="rule in detailRules" :key="rule.id" class="reason-rule">
         <h3>{{ rule.pool === 'enhance' ? '强化规则' : '弃置规则' }} · {{ rule.label }}</h3>
         <dl>

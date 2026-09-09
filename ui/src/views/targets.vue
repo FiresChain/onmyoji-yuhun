@@ -70,6 +70,7 @@ import { copyText } from "../persistence.js";
 import { formatTeamCalculationError } from "../team-calculation-errors.js";
 import ManualTargetEditor from "../components/ManualTargetEditor.vue";
 import PotentialComparison from "../components/PotentialComparison.vue";
+import YuhunSuitPicker from "../components/YuhunSuitPicker.vue";
 import {
   YUHUN_CATEGORY_OPTIONS,
   shikigamiByHeroId,
@@ -2594,19 +2595,6 @@ function ruleSummary(rule: PresetRule): string {
     </section>
   </div>
 
-  <div v-if="ruleYuhunPickerOpen" class="modal-backdrop rule-yuhun-picker-overlay" @click.self="ruleYuhunPickerOpen = false" @keydown.esc="ruleYuhunPickerOpen = false">
-    <section class="rule-yuhun-picker" role="dialog" aria-modal="true" aria-label="选择规则御魂套装">
-      <header><div><span>多选</span><h3>选择御魂套装</h3></div><button class="icon-button" title="关闭御魂套装选择" @click="ruleYuhunPickerOpen = false"><X :size="18" /></button></header>
-      <div class="rule-yuhun-picker-body">
-        <nav class="rule-yuhun-categories" aria-label="御魂分类"><button v-for="category in YUHUN_CATEGORY_OPTIONS" :key="category" :class="{ active: ruleYuhunCategory === category }" @click="ruleYuhunCategory = category">{{ category }}</button></nav>
-        <div class="rule-yuhun-results">
-          <label class="rule-yuhun-search"><Search :size="16" /><input v-model="ruleYuhunSearch" autofocus placeholder="输入搜索的御魂名字…" /></label>
-          <div class="rule-yuhun-grid" data-testid="rule-yuhun-grid"><button v-for="item in visibleRuleYuhun" :key="item.name" :class="{ selected: ruleSuits.includes(item.name) }" @click="toggleRuleYuhun(item.name)"><span class="rule-yuhun-image"><img v-if="item.image" :src="item.image" :alt="item.label" /><span v-else>{{ item.placeholder }}</span></span><span><strong>{{ item.label }}</strong><small>{{ item.category }}</small></span><Check v-if="ruleSuits.includes(item.name)" :size="15" /></button></div>
-          <div v-if="visibleRuleYuhun.length === 0" class="rule-yuhun-no-result">没有匹配的御魂套装</div>
-        </div>
-      </div>
-      <footer><span>已选择 {{ ruleSuits.length }} 个御魂套装</span><button class="primary" @click="ruleYuhunPickerOpen = false">完成</button></footer>
-    </section>
-  </div>
+  <YuhunSuitPicker v-if="ruleYuhunPickerOpen" :options="YUHUN_TYPES" :selected="ruleSuits" @change="ruleSuits = $event" @close="ruleYuhunPickerOpen = false" @apply="ruleYuhunPickerOpen = false" />
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" :compact="potentialComparisonCompact" reference-title="当前装配御魂" @close="potentialComparisonTargets = null; potentialComparisonCompact = false" />
 </template>

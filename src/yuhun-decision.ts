@@ -192,7 +192,7 @@ export function buildYuhunDecisionRows(
       disposition = "retain";
       reason = ruleMatch.discard.length > 0 ? "弃置捞回" : "强化规则";
     } else if (ruleMatch.discard.length > 0) {
-      disposition = "discard";
+      disposition = potentialTargets.length > 0 ? "retain" : "discard";
       reason = "弃置规则";
     } else if (potentialTargets.length > 0) {
       reason = "阵容提升";
