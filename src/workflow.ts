@@ -1,7 +1,9 @@
 import { calculateBaselineBundle, type DominanceThresholds } from "./baseline.js";
+import { buildDecisionPlan, type DecisionPlan } from "./decision-plan.js";
 import { calculateYuhunCapacity } from "./capacity.js";
 import {
   decideSpeedCategories,
+  FREQUENCY_BIAS_NOTICE,
   estimateSpeedCategoryFrequencies,
   type SpeedCategoryDecision,
   type SpeedDecisionReport
@@ -437,7 +439,7 @@ function mergeThresholds(parts: readonly DominanceThresholds[]): DominanceThresh
 }
 
 function previewGroups(
-  plan: DualFilterDrafts,
+  plan: DecisionPlan,
   items: readonly YyxYuhun[],
   markedDiscardIds: ReadonlySet<string>
 ): {
@@ -519,7 +521,7 @@ export class YuhunWorkflow {
   private markedDiscardIds: ReadonlySet<string> | null = null;
   private decision: SpeedDecisionReport | null = null;
   private decisionInput: Parameters<typeof decideSpeedCategories>[0] | null = null;
-  private draftPlan: DualFilterDrafts | null = null;
+  private draftPlan: DecisionPlan | null = null;
   private planInput: Parameters<typeof buildDualFilterDrafts>[0] | null = null;
   private planSummary: PlanSummaryDTO | null = null;
   private checklist: ImportChecklistDTO | null = null;
@@ -528,7 +530,7 @@ export class YuhunWorkflow {
   private readonly baselineCache = new Map<string, ReturnType<typeof calculateBaselineBundle>[number]>();
   private readonly decisionCache = new Map<string, SpeedDecisionReport>();
   private readonly planCache = new Map<string, {
-    readonly plan: DualFilterDrafts;
+    readonly plan: DecisionPlan;
     readonly summary: PlanSummaryDTO;
     readonly checklist: ImportChecklistDTO;
   }>();
@@ -557,55 +559,17 @@ export class YuhunWorkflow {
     const key = JSON.stringify(input);
     if (key === this.analysisKey && this.analysis !== null) return this.analysis;
     try {
-      const templates = templatesFor(input);
+      const templates: YuhunTemplate[] = [];
       const diagnosticsEnabled = input.diagnostics === true;
       const diagnosticStages: AnalysisDiagnosticsDTO["stages"][number][] = [];
-      const diagnosticStage = <T extends AnalysisDiagnosticsDTO["stages"][number]["id"]>(id: T, startedAt: number): void => {
-        if (diagnosticsEnabled) diagnosticStages.push({ id, elapsedMs: Math.max(0, performanceNow() - startedAt) });
-      };
-      const performanceNow = (): number => typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
-      const level15 = this.items.filter((item) => item.star === 6 && item.level === 15);
-      if (level15.length === 0) workflowFailure("analysis", "MISSING_LEVEL_15", "快照中没有六星 +15 御魂，无法计算 baseline");
-      const baselineStartedAt = performanceNow();
-      const bundle = templates.map((template) => {
-        const cacheKey = JSON.stringify(template);
-        const cached = this.baselineCache.get(cacheKey);
-        if (cached !== undefined) return cached;
-        const calculated = calculateBaselineBundle([template], level15)[0]!;
-        this.baselineCache.set(cacheKey, calculated);
-        return calculated;
-      });
-      diagnosticStage("baseline", baselineStartedAt);
-      const thresholds = mergeThresholds(bundle.map((entry) => entry.thresholds));
-      const frequencyStartedAt = performanceNow();
-      const frequencies = this.frequencyCache ?? estimateSpeedCategoryFrequencies(this.items);
-      this.frequencyCache ??= frequencies;
-      diagnosticStage("frequency", frequencyStartedAt);
-      if (frequencies.sampleSize === 0) workflowFailure("analysis", "MISSING_LEVEL_0", "快照中没有六星 +0 样本，无法估计类别频率");
-      const decisionInput = {
-        templates,
-        thresholds,
-        frequencies,
-        budgetPerTenThousand: input.budgetPerTenThousand ?? (input.riskTier === "tier0" ? 0 : 1),
-        diagnostics: diagnosticsEnabled
-      };
-      const decisionKey = JSON.stringify(decisionInput);
-      const decisionStartedAt = performanceNow();
-      const decision = this.decisionCache.get(decisionKey) ?? decideSpeedCategories(decisionInput);
-      this.decisionCache.set(decisionKey, decision);
-      diagnosticStage("category-decision", decisionStartedAt);
+      const diagnosticStage = (id: AnalysisDiagnosticsDTO["stages"][number]["id"], startedAt: number) => { if (diagnosticsEnabled) diagnosticStages.push({ id, elapsedMs: performanceNow() - startedAt }); };
+      const performanceNow = () => performance.now();
+      const level15 = this.items.filter(item => item.star === 6 && item.level === 15);
+      const thresholds: DominanceThresholds = {};
+      const frequencies = { sampleSize: this.items.filter(item => item.star === 6 && item.level === 0).length, categories: [] as { count: number }[] };
+      const decision: SpeedDecisionReport = { sampleSize: frequencies.sampleSize, biasNotice: FREQUENCY_BIAS_NOTICE, budgetPerTenThousand: 0, expectedMissesPerTenThousand: 0, observedDiscardCount: 0, observedDiscardCoverage: null, tier0DiscardedCategoryCount: 0, tier1DiscardedCategoryCount: 0, categories: [] };
       const reasonCounts: Record<string, number> = {};
-      for (const category of decision.categories) increment(reasonCounts, category.reason);
-      const baselines = bundle.map(({ baseline }) => ({
-        templateId: baseline.template.id,
-        baseline: baseline.baseline,
-        slots: (baseline.bestPattern?.slots ?? []).map((slot) => ({
-          position: slot.position,
-          role: slot.role,
-          suit: slot.yuhun?.name ?? null,
-          speed: slot.speed
-        }))
-      }));
+      const baselines: BaselineDTO[] = [];
       const decisionRowsStartedAt = performanceNow();
       const yuhunDecisions = buildYuhunDecisionRows(
         this.items,
@@ -614,9 +578,10 @@ export class YuhunWorkflow {
         input.defaultDisposition ?? "retain"
       );
       diagnosticStage("decision-rows", decisionRowsStartedAt);
+      for (const row of yuhunDecisions) for (const tag of row.reasonTags ?? [row.reason]) increment(reasonCounts, tag);
       const markedDiscardIds = new Set(
         yuhunDecisions.flatMap((row, index) =>
-          row.disposition === "discard" && this.items![index]!.star === 6
+          row.disposition === "discard" && this.items![index]!.star === 6 && this.items![index]!.level === 0 && !this.items![index]!.lock && !this.items![index]!.garbage
             ? [this.items![index]!.id]
             : []
         )
@@ -633,7 +598,7 @@ export class YuhunWorkflow {
         tier0CategoryCount: decision.tier0DiscardedCategoryCount,
         tier1CategoryCount: decision.tier1DiscardedCategoryCount,
         reasonCounts,
-        frequencyBiasNotice: decision.biasNotice,
+        frequencyBiasNotice: "按当前库存及单件决策生成，不使用速度分类或风险档位。",
         inventoryCapacity: inventoryCapacity(this.items),
         markedDiscardProjection: {
           before: inventoryCapacity(this.items),
@@ -665,7 +630,7 @@ export class YuhunWorkflow {
       this.markedDiscardIds = markedDiscardIds;
       this.analysisKey = key;
       this.decision = decision;
-      this.decisionInput = decisionInput;
+      this.decisionInput = null;
       this.draftPlan = null;
       this.planInput = null;
       this.planSummary = null;
@@ -741,12 +706,12 @@ export class YuhunWorkflow {
   }
 
   generatePlan(input: GeneratePlanInput): GeneratedPlanDTO {
-    if (this.items === null || this.decisionInput === null || this.markedDiscardIds === null) workflowFailure("plan", "ANALYSIS_REQUIRED", "请先完成账号分析");
+    if (this.items === null || this.markedDiscardIds === null) workflowFailure("plan", "ANALYSIS_REQUIRED", "请先完成账号分析");
     try {
-      const planInput = { headerHex: input.headerHex, decisionInput: this.decisionInput, staticPolicy: input.staticPolicy };
+      const planInput = { headerHex: input.headerHex };
       const planKey = JSON.stringify({ planInput, analysisKey: this.analysisKey });
       const cached = this.planCache.get(planKey);
-      const plan = cached?.plan ?? buildDualFilterDrafts(planInput);
+      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, input.headerHex);
       const preview = cached === undefined
         ? previewGroups(plan, this.items, this.markedDiscardIds)
         : { summary: cached.summary, checklist: cached.checklist };
@@ -754,7 +719,7 @@ export class YuhunWorkflow {
         this.planCache.set(planKey, { plan, summary: preview.summary, checklist: preview.checklist });
       }
       this.draftPlan = plan;
-      this.planInput = planInput;
+      this.planInput = null;
       this.planSummary = preview.summary;
       this.checklist = preview.checklist;
       this.simulation = null;
@@ -901,8 +866,7 @@ export class YuhunWorkflow {
       groupLimitValid: this.planSummary !== null && this.planSummary.discardGroupCount <= 60 && this.planSummary.rescueGroupCount <= 60,
       roundtripValid: this.planSummary?.roundtripWarnings.length === 0,
       previewComplete: this.planSummary !== null,
-      tier0ProofPassed: this.simulation?.tier0Passed === true,
-      selectedTierSimulationPassed: this.simulation?.selectedTierPassed === true
+      retainedItemsProtected: this.planSummary?.cleanupComparison?.extraCleanupCount === 0,
     };
   }
 

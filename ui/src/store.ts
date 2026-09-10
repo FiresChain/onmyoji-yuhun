@@ -44,6 +44,7 @@ import {
   type WorkbenchSessionV1,
   type WorkbenchViewStateV1
 } from "./persistence.js";
+import { filterShareFromDraft } from "../../src/browser.js";
 import { findTargetScene, localCatalogOverlay, mergePublishedCatalog, targetScenePaths, TARGET_CATALOG, type TargetDomain } from "./target-catalog.js";
 import { WorkflowClient, WorkflowClientError, WorkflowClientPausedError, resolveTeamCalculationSchedule, type WorkerProgress } from "./worker/client.js";
 import {
@@ -570,8 +571,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       "groupLimitValid",
       "roundtripValid",
       "previewComplete",
-      "tier0ProofPassed",
-      "selectedTierSimulationPassed"
+      "retainedItemsProtected"
     ];
     return plan.value !== null && required.every((key) => gateState.value[key] === true);
   });
@@ -793,11 +793,11 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         yuhunDecisions.value = stored.session.yuhunDecisions ?? null;
         yuhunDecisionFacets.value = null;
       }
-      plan.value = stored.session.plan;
-      simulation.value = stored.session.simulation;
-      checklist.value = stored.session.checklist;
+      plan.value = null;
+      simulation.value = null;
+      checklist.value = null;
       actuals.value = { ...stored.session.actuals };
-      gateState.value = { ...stored.session.gateState };
+      gateState.value = await client.getGateState();
       targetViewState.value = stored.session.viewState === null || stored.session.viewState === undefined
         ? null
         : JSON.parse(JSON.stringify(stored.session.viewState)) as WorkbenchViewStateV1;
@@ -1542,6 +1542,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
 
   async function generatePlan(): Promise<void> {
     begin("正在生成并预演 D/E");
+    plan.value = null;
+    gateState.value = {};
     try {
       const source = await decodeYuhunCode(existingFilterCode.value.trim());
       if (source.warnings.length > 0) throw new Error("现有筛选码包含无法忽略的解析警告");
@@ -1552,6 +1554,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       ]);
       const invalid = [discard, rescue].find((entry) => entry !== null && entry.share.warnings.length > 0);
       if (invalid !== undefined) throw new Error("服务生成的御魂码包含无法忽略的解析警告");
+      for (const [draft, encoded] of [[generated.discardDraft, discard], [generated.rescueDraft, rescue]] as const) {
+        if (!draft || !encoded) continue;
+        const decoded = await decodeYuhunCode(encoded.yuhunCode);
+        const expected = filterShareFromDraft(draft);
+        const canonical = (share: typeof decoded) => filterShareFromDraft({ headerHex: share.headerHex, planKind: share.planKind === "discard" ? "discard" : "enhance", groups: share.groups.map(group => ({ name: group.name, criteria: group.criteria })) });
+        if (decoded.warnings.length || decoded.planKind !== expected.planKind || JSON.stringify(canonical(decoded)) !== JSON.stringify(expected)) throw new Error("编码往返不一致，不能使用本次双码");
+      }
       plan.value = {
         ...generated.summary,
         discardCode: discard?.yuhunCode ?? null,
@@ -1561,7 +1570,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       simulation.value = null;
       actuals.value = {};
       gateState.value = await client.getGateState();
-      notice.value = "双码已完成编码往返和账号池预演；模拟通过前不可复制";
+      notice.value = "双码已完成编码往返和当前库存保留保护验证；请按预演数量在游戏中核对";
     } catch (reason) {
       fail(reason);
     } finally {
