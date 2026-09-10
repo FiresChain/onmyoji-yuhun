@@ -7,6 +7,12 @@ import { YUHUN_TYPES } from "./mappings.js";
 import type { YyxYuhun } from "./yyx.js";
 
 const header = "00".repeat(16);
+test("ID-only drafts preview the same suit conditions as the encoder", () => {
+  const share = (criteria: { types?: string[]; typeIds?: number[] }) => filterShareFromDraft({ headerHex: header, planKind: "discard", groups: [{ name: "测试", criteria }] });
+  assert.deepEqual(share({ typeIds: [300006], types: ["狂骨"] }), share({ types: ["涅槃火"] }));
+  assert.deepEqual(share({ typeIds: [], types: ["狂骨"] }), share({ types: [] }));
+  assert.throws(() => share({ typeIds: [999] }), /未知御魂套装 ID/);
+});
 const item = (id: string, changes: Partial<YyxYuhun> = {}): YyxYuhun => ({ id, name: "招财猫", suitId: 300010, position: 2, level: 0, star: 6, mainStat: "speed", mainValue: 12, subStats: { speed: 2.4, crit: .03 }, intrinsicStats: {}, initialSubStats: { speed: 2.4, crit: .03 }, born: 0, lock: false, garbage: false, ...changes });
 function run(items: YyxYuhun[], wanted: string[]) {
   const plan = buildDecisionPlan(items, new Set(wanted), header);

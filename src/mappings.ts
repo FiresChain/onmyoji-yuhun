@@ -169,7 +169,7 @@ export const TWO_PIECE_EFFECTS = [
     name: "攻击加成",
     teamCodeId: 0,
     stat: "attackPercent",
-    suitNames: ["隐念", "贝吹坊", "兵主部", "狂骨", "阴摩罗", "心眼", "鸣屋", "狰", "轮入道", "蝠翼", "八咫镜", "尘冢"]
+    suitNames: ["隐念", "贝吹坊", "兵主部", "狂骨", "阴摩罗", "心眼", "鸣屋", "狰", "轮入道", "蝠翼", "尘冢"]
   },
   {
     id: "two-piece-effect:crit",

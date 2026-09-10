@@ -1097,8 +1097,14 @@ export function buildDualFilterDrafts(input: BuildDualFilterDraftsInput): DualFi
 
 function canonicalCriteria(criteria: FilterCriteriaDraft | undefined): FilterCriteria {
   const input = criteria ?? {};
+  const namesById = new Map<number, string>(Object.entries(YUHUN_SUIT_IDS_BY_NAME).map(([name, id]) => [id, name]));
+  const types = input.typeIds === undefined ? input.types ?? [] : input.typeIds.map(id => {
+    const name = namesById.get(id);
+    if (!Number.isSafeInteger(id) || name === undefined) throw new Error(`未知御魂套装 ID：${id}`);
+    return name;
+  });
   return {
-    types: YUHUN_TYPES.filter((type) => (input.types ?? []).some((value) => canonicalYuhunName(value) === type)),
+    types: YUHUN_TYPES.filter((type) => types.some((value) => canonicalYuhunName(value) === type)),
     positions: [...new Set(input.positions ?? [])].sort((left, right) => left - right),
     stars: [...new Set(input.stars ?? [])].sort((left, right) => left - right),
     mainStats: sortByOrder(input.mainStats ?? [], MAIN_STAT_ORDER),

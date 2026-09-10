@@ -65,6 +65,8 @@ export interface TeamExtraAttributes {
 }
 
 export interface ManualSuitRequirement {
+  readonly suitId?: number;
+  readonly effectId?: number;
   readonly name: string;
   readonly count: 2 | 4;
 }

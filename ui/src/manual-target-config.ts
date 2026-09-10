@@ -207,7 +207,7 @@ function rebuildCatalog(catalog: AssetCatalog): void {
     const id = String(item.id ?? index);
     return {
       id,
-      name: localizedName(item.names, id),
+      name: canonicalYuhunName(localizedName(item.names, id)),
       category: YUHUN_CATEGORY_BY_TYPE[String(item.type ?? "")] ?? "其他",
       avatar: assetUrl(item.avatar)
     };

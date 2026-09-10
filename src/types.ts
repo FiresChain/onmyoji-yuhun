@@ -33,6 +33,7 @@ export interface SubStatFilter {
 
 export interface FilterCriteria {
   types: string[];
+  typeIds?: number[];
   positions: number[];
   stars: number[];
   mainStats: StatId[];
@@ -80,6 +81,8 @@ export interface YuhunFilterShare {
 /** Semantic input for creating a new share code. Omitted arrays mean no restriction. */
 export interface FilterCriteriaDraft {
   types?: string[];
+  /** Stable suit IDs take precedence over display names when encoding. */
+  typeIds?: number[];
   positions?: number[];
   stars?: number[];
   mainStats?: StatId[];
