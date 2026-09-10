@@ -19,7 +19,7 @@ import type { IntrinsicStatId, StatId } from "./types.js";
 import type { SnapshotHeroBase, YyxYuhun } from "./yyx.js";
 import {
   enumerateMaximumUpgradeStates,
-  initialSubStatsForComparison,
+  samePotentialContribution,
   remainingUpgradeRolls,
   type YuhunPotentialStrategy
 } from "./yuhun-potential.js";
@@ -40,7 +40,7 @@ export const TEAM_METRIC_NAMES = {
 } as const;
 
 /** Stable identifiers for performance comparisons across releases. */
-export const TEAM_CALCULATION_ALGORITHM_VERSION = "team-search-v2" as const;
+export const TEAM_CALCULATION_ALGORITHM_VERSION = "team-search-v3" as const;
 export const TEAM_CALCULATION_SEARCH_DEFAULTS = {
   maxCombinations: 5_000_000,
   beamWidth: 2_000,
@@ -164,6 +164,7 @@ export interface TeamCalculationYuhunDTO {
 }
 
 export interface TeamCalculationPotentialEvidenceDTO {
+  readonly comparisonNote?: string;
   readonly yuhunId: string;
   readonly strategy: YuhunPotentialStrategy;
   readonly position: number;
@@ -450,14 +451,6 @@ function cappedPanel(panel: Panel): Panel {
   return { ...panel, crit: Math.min(1, panel.crit) };
 }
 
-function oneRollSubStats(
-  subStats: Partial<Record<StatId, number>>
-): Partial<Record<StatId, number>> {
-  return Object.fromEntries(
-    Object.keys(subStats).map((stat) => [stat, SUB_STAT_MAX_ROLLS[stat as StatId]])
-  ) as Partial<Record<StatId, number>>;
-}
-
 function maximumMainValue(candidate: YyxYuhun, reference: Yuhun): number {
   if (candidate.level >= 15) return candidate.mainValue;
   if (
@@ -592,8 +585,8 @@ function estimatePotentialEvaluationWork(
 ): number {
   const { requiredNames, requiredSetsFillAllSlots } = requiredSetFilterForTarget(target);
   return items.reduce((total, item) => {
-    if (item.level >= 15 || !potentialCandidateAllowed(target, item, usedYuhunIds, requiredSetsFillAllSlots, requiredNames)) return total;
-    // One embryo comparison plus one pass per possible upgrade state.
+    if (item.level !== 0 || item.lock || !potentialCandidateAllowed(target, item, usedYuhunIds, requiredSetsFillAllSlots, requiredNames)) return total;
+    // One compatibility comparison plus one pass per possible upgrade state.
     return Math.min(WORK_ESTIMATE_MAX, total + 1 + estimatedUpgradeStateCount(item));
   }, 0);
 }
@@ -671,55 +664,24 @@ function calculatePotentialEvidence(
   const baseline = calculateIndicator(cappedPanel(baselinePanel), indicator);
   const baselineTolerance = Math.max(1, Math.abs(baseline)) * 1e-12;
   const references = bestBuild.filter((item) => item.level === 15);
-  const usableReferences = references.length > 0 ? references : bestBuild;
-  const referenceByPosition = new Map(usableReferences.map((item) => [item.position, item]));
-  const itemsById = new Map(items.map((item) => [item.id, item]));
+  const referenceByPosition = new Map(references.map((item) => [item.position, item]));
   const stateCache = new Map<string, ReturnType<typeof enumerateMaximumUpgradeStates>>();
 
   for (const candidate of items) {
-    if (candidate.level >= 15 || !potentialCandidateAllowed(target, candidate, usedYuhunIds, requiredSetsFillAllSlots, requiredNames)) continue;
+    if (candidate.level !== 0 || candidate.lock || !potentialCandidateAllowed(target, candidate, usedYuhunIds, requiredSetsFillAllSlots, requiredNames)) continue;
     const reference = referenceByPosition.get(candidate.position);
     if (reference === undefined) continue;
-    const referenceItem = itemsById.get(reference.id) ?? reference as YyxYuhun;
 
-    // Type-level embryo dominance works even when a +15 snapshot has no
-    // enhancement history. Numeric initial values remain unknown in that case.
-    const candidateEmbryo = initialSubStatsForComparison(candidate);
-    const referenceEmbryo = initialSubStatsForComparison(referenceItem);
-    const embryoReplacement = bestBuild.map((item) => item.id === reference.id ? candidate : item);
-    if (candidateEmbryo !== null && referenceEmbryo !== null && matchesRequiredSetGroups(embryoReplacement, target.includedSetGroups)) {
-      const referenceEmbryoItem: Yuhun = {
-        ...referenceItem,
-        mainValue: candidate.initialSubStats !== null && referenceItem.initialSubStats !== null ? referenceItem.mainValue : 0,
-        subStats: referenceItem.initialSubStats === null
-          ? oneRollSubStats(referenceEmbryo)
-          : referenceEmbryo
-      };
-      const candidateEmbryoValues = candidate.initialSubStats === null
-        ? oneRollSubStats(candidateEmbryo)
-        : candidateEmbryo;
-      const candidateEmbryoWithValues: Yuhun = {
-        ...candidate,
-        mainValue: candidate.initialSubStats !== null && referenceItem.initialSubStats !== null ? candidate.mainValue : 0,
-        subStats: candidateEmbryoValues
-      };
-      const candidateScore = calculateIndicator(cappedPanel(calculatePanel(hero.panel, [candidateEmbryoWithValues], target.bonusStats)), indicator);
-      const referenceScore = calculateIndicator(cappedPanel(calculatePanel(hero.panel, [referenceEmbryoItem], target.bonusStats)), indicator);
-      if (candidateScore > referenceScore + baselineTolerance) {
-        addPotentialEvidence(evidence, {
-          yuhunId: candidate.id,
-          strategy: "embryo-comparison",
-          position: candidate.position,
-          referenceSuit: reference.name,
-          referenceYuhunId: reference.id,
-          referenceLevel: reference.level,
-          statesEvaluated: 0,
-          upperScore: candidateScore,
-          baselineScore: referenceScore,
-          exactEmbryo: candidate.initialSubStats !== null && referenceItem.initialSubStats !== null
-        });
-      }
-    }
+    // Fixed named requirements are not broadened into effect-equivalent suits.
+    const fixedGroups = target.includedSetGroups.filter(group => group.names.length === 1 && group.intrinsicStat === undefined && group.names.includes(reference.name));
+    if (fixedGroups.length && candidate.name !== reference.name) continue;
+    if (!samePotentialContribution(candidate, reference)) continue;
+    const equivalentPair = candidate.name !== reference.name;
+    // Retain the reference set identity only for scoring the assumed future pair.
+    // The evidence and displayed candidate always keep the real suit name.
+    const comparisonNote = equivalentPair
+      ? "按相同套装属性或固有属性贡献比较，假设后续可凑齐套装；不是立即换装结果。"
+      : "同套装贡献比较；按最大成长计算潜力，不代表实际强化收益。";
 
     const stateKey = `${candidate.level}|${Object.entries(candidate.subStats).sort(([left], [right]) => left.localeCompare(right)).map(([stat, value]) => `${stat}:${value}`).join(",")}`;
     const states = stateCache.get(stateKey) ?? enumerateMaximumUpgradeStates(candidate);
@@ -728,6 +690,7 @@ function calculatePotentialEvidence(
     for (const state of states) {
       const upgraded: Yuhun = {
         ...candidate,
+        name: equivalentPair ? reference.name : candidate.name,
         level: 15,
         mainValue: maximumMainValue(candidate, reference),
         subStats: state.subStats
@@ -742,9 +705,14 @@ function calculatePotentialEvidence(
       }
     }
     if (bestUpperScore !== null) {
+      const relevantStats = Object.keys(candidate.subStats).filter(stat => {
+        const probe = calculatePanel(hero.panel, [{ ...candidate, mainValue: 0, subStats: { [stat]: SUB_STAT_MAX_ROLLS[stat as StatId] }, intrinsicStats: {} }], target.bonusStats);
+        return calculateIndicator(cappedPanel(probe), indicator) > calculateIndicator(cappedPanel(calculatePanel(hero.panel, [], target.bonusStats)), indicator) + baselineTolerance;
+      });
       addPotentialEvidence(evidence, {
         yuhunId: candidate.id,
         strategy: "upgrade-upper-bound",
+        comparisonNote: `${comparisonNote} 候选现有评分相关副属性：${relevantStats.map(stat => STAT_LABELS[stat as StatId]).join("、") || "无直接增益属性"}（仅辅助说明，不还原初始属性）。`,
         position: candidate.position,
         referenceSuit: reference.name,
         referenceYuhunId: reference.id,
@@ -944,7 +912,7 @@ export function calculateTeamTargets(
       total: targets.length,
       current: target.shikigamiName ?? "未知式神",
       currentShikigamiId: target.shikigamiId,
-      detail: "正在筛选御魂、比较胚子并评估强化上界"
+      detail: "正在筛选 +0 胚子并比较潜力上界"
     });
     const outcome = calculateTarget(target, items, heroBases, dynamicBounds, unresolvedHighestStats, usedYuhunIds);
     const result = outcome.result;

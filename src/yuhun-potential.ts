@@ -1,4 +1,4 @@
-import { SUB_STAT_MAX_ROLLS } from "./mappings.js";
+import { SUB_STAT_MAX_ROLLS, TWO_PIECE_EFFECTS } from "./mappings.js";
 import type { Yuhun } from "./calculation.js";
 import type { StatId } from "./types.js";
 
@@ -10,6 +10,17 @@ export interface MaximumUpgradeState {
 }
 
 const SUB_STATS = Object.keys(SUB_STAT_MAX_ROLLS) as StatId[];
+
+/** Compatibility for the deliberately relaxed two-piece pairing assumption. */
+export function samePotentialContribution(candidate: Yuhun, reference: Yuhun): boolean {
+  const intrinsic = Object.keys(reference.intrinsicStats ?? {}) as StatId[];
+  const candidateIntrinsic = Object.keys(candidate.intrinsicStats ?? {});
+  if (intrinsic.length || candidateIntrinsic.length) {
+    return intrinsic.length > 0 && intrinsic.every(stat => (candidate.intrinsicStats[stat] ?? 0) >= (reference.intrinsicStats[stat] ?? 0));
+  }
+  return candidate.name === reference.name || TWO_PIECE_EFFECTS.some(effect =>
+    (effect.suitNames as readonly string[]).includes(candidate.name) && (effect.suitNames as readonly string[]).includes(reference.name));
+}
 
 function stateKey(subStats: Partial<Record<StatId, number>>): string {
   return SUB_STATS.map((stat) => `${stat}:${subStats[stat] ?? 0}`).join("|");

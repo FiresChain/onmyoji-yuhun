@@ -1460,7 +1460,7 @@ const calculationDetailCandidates = computed(() => {
   const ids = entity.potentialEvidence === undefined
     ? entity.potentialYuhunIds ?? []
     : entity.potentialEvidence
-      .filter((item) => item.strategy !== "candidate-build" && item.position === calculationDetailPosition.value)
+      .filter((item) => item.strategy === "upgrade-upper-bound" && item.position === calculationDetailPosition.value)
       .map((item) => item.yuhunId);
   return [...new Set(ids)].flatMap((id) => {
     const item = entity.potentialYuhunDetails?.find((detail) => detail.yuhunId === id) ?? calculationDetailPieces.value.get(id);
@@ -1482,9 +1482,10 @@ function openCalculationCandidateComparison(candidate: TeamCalculationYuhunDTO):
   const target = calculationDetailTarget.value;
   const reference = calculationDetailPiece.value;
   if (entity === null || target === null || reference === null) return;
-  const evidence = entity.potentialEvidence?.find((item) => item.yuhunId === candidate.yuhunId && item.position === candidate.position);
+  const evidence = entity.potentialEvidence?.find((item) => item.strategy === "upgrade-upper-bound" && item.yuhunId === candidate.yuhunId && item.position === candidate.position);
   if (evidence === undefined) return;
   potentialComparisonTargets.value = [{
+    ...(evidence.comparisonNote === undefined ? {} : { comparisonNote: evidence.comparisonNote }),
     position: candidate.position,
     teamLabel: target.label,
     shikigamiName: entity.shikigamiName,
@@ -1569,7 +1570,8 @@ function openEntityPotentialComparison(target: ImportedTeamTarget, entity: TeamC
   }));
   if (evidence.length === 0) return;
   const byId = new Map((entity.potentialYuhunDetails ?? []).map((item) => [item.yuhunId, item]));
-  potentialComparisonTargets.value = evidence.map((entry) => ({
+  potentialComparisonTargets.value = evidence.filter(entry => entry.strategy === "upgrade-upper-bound").map((entry) => ({
+    ...("comparisonNote" in entry && typeof entry.comparisonNote === "string" ? { comparisonNote: entry.comparisonNote } : {}),
     position: entry.position,
     teamLabel: target.label,
     shikigamiName: entity.shikigamiName,

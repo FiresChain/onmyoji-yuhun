@@ -14,6 +14,7 @@ export interface AnalysisRuleInput {
 }
 
 export interface YuhunPotentialTarget {
+  readonly comparisonNote?: string;
   readonly teamId?: string;
   readonly entityIndex?: number;
   readonly position: number;
@@ -122,7 +123,7 @@ function potentialTargetsByItem(
         baselineScore: entity.score,
         exactEmbryo: false
       }));
-      const improvementEvidence = evidence.filter((entry) => entry.strategy !== "candidate-build");
+      const improvementEvidence = evidence.filter((entry) => entry.strategy === "upgrade-upper-bound");
       if (improvementEvidence.length === 0) continue;
       for (const entry of improvementEvidence) {
         const reference = entry.strategy === "candidate-build"
@@ -131,6 +132,7 @@ function potentialTargetsByItem(
           ? entity.pieces.find((item) => item.position === entry.position) ?? null
           : entity.pieces.find((item) => item.yuhunId === entry.referenceYuhunId) ?? null;
         const target: YuhunPotentialTarget = {
+          ...("comparisonNote" in entry && typeof entry.comparisonNote === "string" ? { comparisonNote: entry.comparisonNote } : {}),
           teamId: report.id,
           entityIndex: entity.entityIndex,
           position: entry.position,
