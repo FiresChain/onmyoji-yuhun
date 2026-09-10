@@ -86,6 +86,13 @@ export interface SnapshotSummaryDTO {
 }
 
 export interface InventoryQuery {
+  readonly preview?: {
+    readonly discard: readonly FilterCriteria[];
+    readonly rescue: readonly FilterCriteria[];
+    readonly code: "D" | "E";
+    readonly pool: PreviewGroupDTO["pool"];
+    readonly index: number;
+  };
   readonly page?: number;
   readonly pageSize?: number;
   readonly search?: string;
@@ -250,8 +257,8 @@ export interface YuhunDecisionFacetsDTO {
 }
 
 export interface GeneratePlanInput {
-  /** Header extracted by the private yuhun-code API. */
-  readonly headerHex: string;
+  /** Optional legacy header; the encode API supplies the actual ID on export. */
+  readonly headerHex?: string;
   readonly staticPolicy: StaticRetentionPolicy;
 }
 
@@ -263,6 +270,7 @@ export interface GeneratedPlanDTO {
 }
 
 export interface PreviewGroupDTO {
+  readonly criteria?: import("./types.js").FilterCriteria;
   readonly pool: "normal" | "new-garbage" | "historical-garbage" | "combined";
   readonly code: "D" | "E";
   readonly index: number;
@@ -646,7 +654,16 @@ export class YuhunWorkflow {
     if (this.items === null) workflowFailure("snapshot", "SNAPSHOT_REQUIRED", "请先导入 yyx 快照");
     const { page, pageSize, start } = pageBounds(query.page, query.pageSize);
     const search = query.search?.trim().toLocaleLowerCase() ?? "";
+    let matchedIds: Set<string> | null = null;
+    if (query.preview) {
+      const requested = query.preview;
+      const share = (criteria: readonly FilterCriteria[], planKind: "discard" | "enhance") => criteria.length ? filterShareFromDraft({ headerHex: "00".repeat(16), planKind, groups: criteria.map(filter => ({ name: "预演", criteria: filter })) }) : null;
+      const preview = previewDualFilterShares({ items: this.items, discardShare: share(requested.discard, "discard"), rescueShare: share(requested.rescue, "enhance") });
+      const matches = requested.code === "D" ? preview.discardMatch : requested.pool === "new-garbage" ? preview.rescueFromNewDiscardMatch : requested.pool === "historical-garbage" ? preview.incidentalRestoreMatch : preview.rescueMatch;
+      matchedIds = new Set(matches?.groups.find(group => group.groupIndex === requested.index)?.matchedIds ?? []);
+    }
     const filtered = this.items.filter((item) =>
+      (matchedIds === null || matchedIds.has(item.id)) &&
       (query.level === undefined || item.level === query.level) &&
       (query.star === undefined || item.star === query.star) &&
       (query.garbage === undefined || item.garbage === query.garbage) &&
@@ -708,10 +725,13 @@ export class YuhunWorkflow {
   generatePlan(input: GeneratePlanInput): GeneratedPlanDTO {
     if (this.items === null || this.markedDiscardIds === null) workflowFailure("plan", "ANALYSIS_REQUIRED", "请先完成账号分析");
     try {
-      const planInput = { headerHex: input.headerHex };
+      // Matching does not depend on the account ID. This placeholder stays in
+      // local semantic drafts; the UI omits it when calling the encode API.
+      const headerHex = input.headerHex ?? "00".repeat(16);
+      const planInput = { headerHex };
       const planKey = JSON.stringify({ planInput, analysisKey: this.analysisKey });
       const cached = this.planCache.get(planKey);
-      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, input.headerHex);
+      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex);
       const preview = cached === undefined
         ? previewGroups(plan, this.items, this.markedDiscardIds)
         : { summary: cached.summary, checklist: cached.checklist };

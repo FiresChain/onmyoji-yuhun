@@ -64,7 +64,9 @@ import {
 import { teamCalculationMeetsTargetScore, teamDifficultyFromLabel, useWorkbenchStore, type ImportedTeamTarget, type PresetRule, type PresetRulePool } from "../store.js";
 import {
   decodeTeamCodeFromQrImage,
-  readTeamCodeFromClipboard
+  readTeamCodeFromClipboard,
+  decodeYuhunCodeFromQrImage,
+  readYuhunCodeFromClipboard
 } from "../team-code-qr.js";
 import { copyText } from "../persistence.js";
 import { formatTeamCalculationError } from "../team-calculation-errors.js";
@@ -288,6 +290,17 @@ const ruleYuhunSearch = ref("");
 const ruleYuhunCategory = ref<YuhunCategory>("全部");
 const ruleCodeImportOpen = ref(false);
 const ruleCodeImportValue = ref("");
+const ruleEntryMode = ref<"code" | "manual">("code");
+const ruleQrInput = ref<HTMLInputElement | null>(null);
+const ruleImportBusy = ref<"image" | "clipboard" | "decode" | null>(null);
+const ruleImportMessage = ref("");
+const ruleImportFailed = ref(false);
+let ruleImportSequence = 0;
+
+watch(ruleCodeImportOpen, () => {
+  ruleImportSequence++;
+  ruleImportBusy.value = null;
+});
 
 const statOptions: Array<{ id: StatId; label: string }> = [
   "attack", "attackPercent", "defense", "defensePercent", "hp", "hpPercent",
@@ -1958,19 +1971,70 @@ function saveRule(): void {
       ...(ruleSource.value === undefined ? {} : { source: ruleSource.value })
     }, editingRuleId.value);
     ruleOpen.value = false;
+    ruleCodeImportOpen.value = false;
   } catch (reason) {
     store.error = { stage: "policy", code: "INVALID_PRESET_RULE", path: null, message: reason instanceof Error ? reason.message : "预置规则无效" };
   }
 }
 
-function openRuleCodeImporter(): void {
+function openRuleCodeImporter(pool: PresetRulePool = "discard"): void {
+  resetRuleForm(pool);
+  ruleOpen.value = false;
+  ruleEntryMode.value = "code";
   ruleCodeImportValue.value = "";
+  ruleImportMessage.value = "";
+  ruleImportFailed.value = false;
   ruleCodeImportOpen.value = true;
 }
 
+async function recognizeRuleCode(source: "image" | "clipboard", image?: Blob): Promise<void> {
+  if (ruleImportBusy.value !== null) return;
+  const sequence = ++ruleImportSequence;
+  ruleImportBusy.value = source;
+  ruleImportMessage.value = "正在读取并识别御魂码…";
+  ruleImportFailed.value = false;
+  try {
+    const code = image ? await decodeYuhunCodeFromQrImage(image) : (await readYuhunCodeFromClipboard()).code;
+    if (sequence !== ruleImportSequence || !ruleCodeImportOpen.value) return;
+    ruleCodeImportValue.value = code;
+    ruleImportMessage.value = "识别成功，已填入御魂码。点击“解码并导入”保存规则。";
+  } catch (reason) {
+    if (sequence !== ruleImportSequence || !ruleCodeImportOpen.value) return;
+    ruleImportFailed.value = true;
+    ruleImportMessage.value = reason instanceof Error ? reason.message : "御魂码识别失败";
+  } finally {
+    if (sequence === ruleImportSequence) ruleImportBusy.value = null;
+  }
+}
+
+async function readRuleQrImage(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (file) await recognizeRuleCode("image", file);
+}
+
+async function handleRuleCodePaste(event: ClipboardEvent): Promise<void> {
+  if (ruleEntryMode.value !== "code" || !event.clipboardData) return;
+  const image = Array.from(event.clipboardData.items)
+    .find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
+  if (!image) return;
+  event.preventDefault();
+  await recognizeRuleCode("clipboard", image);
+}
+
 async function importRuleCode(): Promise<void> {
+  if (ruleImportBusy.value !== null || store.busy) return;
+  ruleImportBusy.value = "decode";
+  ruleImportFailed.value = false;
+  ruleImportMessage.value = "正在解码御魂筛选条件…";
   const importedCount = await store.importYuhunFilterCode(ruleCodeImportValue.value);
+  ruleImportBusy.value = null;
   if (importedCount > 0) ruleCodeImportOpen.value = false;
+  else {
+    ruleImportFailed.value = true;
+    ruleImportMessage.value = store.error?.message ?? "御魂码解码失败，请检查后重试";
+  }
 }
 
 function ruleSummary(rule: PresetRule): string {
@@ -2165,10 +2229,10 @@ function ruleSummary(rule: PresetRule): string {
   </section>
 
   <section class="preset-retention-section">
-    <div class="section-toolbar unframed"><div><h2>预置方案</h2><span>{{ store.presetRules.length }} 条规则 · 新增后默认启用</span></div><div class="section-toolbar-actions"><button data-testid="import-yuhun-code" @click="openRuleCodeImporter"><Import :size="15" />导入御魂码</button><span v-if="store.enabledPresetRules.length > 0" class="tag success-tag">已接入单件决策</span></div></div>
+    <div class="section-toolbar unframed"><div><h2>预置方案</h2><span>{{ store.presetRules.length }} 条规则 · 新增后默认启用</span></div><div class="section-toolbar-actions"><button data-testid="import-yuhun-code" @click="openRuleCodeImporter()"><Import :size="15" />导入规则</button><span v-if="store.enabledPresetRules.length > 0" class="tag success-tag">已接入单件决策</span></div></div>
     <div class="preset-pools">
       <section class="preset-pool discard-pool" data-rule-pool="discard">
-        <header class="preset-pool-header"><div><span>DISCARD</span><h3>弃置规则池</h3><p>匹配的御魂进入弃置候选</p></div><div class="preset-pool-controls"><small>{{ discardPresetRules.filter((rule) => rule.enabled).length }} / {{ discardPresetRules.length }} 已启用</small><div class="preset-pool-actions"><button data-testid="enable-all-discard-rules" :disabled="discardPresetRules.length === 0 || discardPresetRules.every((rule) => rule.enabled)" @click="store.setPresetRulePoolEnabled('discard', true)"><Check :size="14" />全部启用</button><button data-testid="disable-all-discard-rules" :disabled="discardPresetRules.length === 0 || discardPresetRules.every((rule) => !rule.enabled)" @click="store.setPresetRulePoolEnabled('discard', false)"><X :size="14" />全部关闭</button><button class="pool-add" data-testid="add-discard-rule" @click="resetRuleForm('discard')"><Plus :size="16" />添加规则</button></div></div></header>
+        <header class="preset-pool-header"><div><span>DISCARD</span><h3>弃置规则池</h3><p>匹配的御魂进入弃置候选</p></div><div class="preset-pool-controls"><small>{{ discardPresetRules.filter((rule) => rule.enabled).length }} / {{ discardPresetRules.length }} 已启用</small><div class="preset-pool-actions"><button data-testid="enable-all-discard-rules" :disabled="discardPresetRules.length === 0 || discardPresetRules.every((rule) => rule.enabled)" @click="store.setPresetRulePoolEnabled('discard', true)"><Check :size="14" />全部启用</button><button data-testid="disable-all-discard-rules" :disabled="discardPresetRules.length === 0 || discardPresetRules.every((rule) => !rule.enabled)" @click="store.setPresetRulePoolEnabled('discard', false)"><X :size="14" />全部关闭</button><button class="pool-add" data-testid="add-discard-rule" @click="openRuleCodeImporter('discard')"><Plus :size="16" />添加规则</button></div></div></header>
         <div v-if="discardPresetRules.length === 0" class="preset-empty"><strong>暂无弃置规则</strong><span>添加需要优先进入弃置候选的筛选条件。</span></div>
         <div v-else class="preset-rule-list">
           <article v-for="rule in discardPresetRules" :key="rule.id" class="preset-rule-row" :class="{ disabled: !rule.enabled }">
@@ -2181,7 +2245,7 @@ function ruleSummary(rule: PresetRule): string {
         </div>
       </section>
       <section class="preset-pool enhance-pool" data-rule-pool="enhance">
-        <header class="preset-pool-header"><div><span>ENHANCE</span><h3>强化规则池</h3><p>匹配的御魂进入强化候选</p></div><div class="preset-pool-controls"><small>{{ enhancePresetRules.filter((rule) => rule.enabled).length }} / {{ enhancePresetRules.length }} 已启用</small><div class="preset-pool-actions"><button data-testid="enable-all-enhance-rules" :disabled="enhancePresetRules.length === 0 || enhancePresetRules.every((rule) => rule.enabled)" @click="store.setPresetRulePoolEnabled('enhance', true)"><Check :size="14" />全部启用</button><button data-testid="disable-all-enhance-rules" :disabled="enhancePresetRules.length === 0 || enhancePresetRules.every((rule) => !rule.enabled)" @click="store.setPresetRulePoolEnabled('enhance', false)"><X :size="14" />全部关闭</button><button class="pool-add" data-testid="add-enhance-rule" @click="resetRuleForm('enhance')"><Plus :size="16" />添加规则</button></div></div></header>
+        <header class="preset-pool-header"><div><span>ENHANCE</span><h3>强化规则池</h3><p>匹配的御魂进入强化候选</p></div><div class="preset-pool-controls"><small>{{ enhancePresetRules.filter((rule) => rule.enabled).length }} / {{ enhancePresetRules.length }} 已启用</small><div class="preset-pool-actions"><button data-testid="enable-all-enhance-rules" :disabled="enhancePresetRules.length === 0 || enhancePresetRules.every((rule) => rule.enabled)" @click="store.setPresetRulePoolEnabled('enhance', true)"><Check :size="14" />全部启用</button><button data-testid="disable-all-enhance-rules" :disabled="enhancePresetRules.length === 0 || enhancePresetRules.every((rule) => !rule.enabled)" @click="store.setPresetRulePoolEnabled('enhance', false)"><X :size="14" />全部关闭</button><button class="pool-add" data-testid="add-enhance-rule" @click="openRuleCodeImporter('enhance')"><Plus :size="16" />添加规则</button></div></div></header>
         <div v-if="enhancePresetRules.length === 0" class="preset-empty"><strong>暂无强化规则</strong><span>添加值得保留并优先强化的筛选条件。</span></div>
         <div v-else class="preset-rule-list">
           <article v-for="rule in enhancePresetRules" :key="rule.id" class="preset-rule-row" :class="{ disabled: !rule.enabled }">
@@ -2563,14 +2627,36 @@ function ruleSummary(rule: PresetRule): string {
     </div>
   </div>
 
-  <div v-if="ruleCodeImportOpen" class="modal-backdrop" @click.self="ruleCodeImportOpen = false" @keydown.esc="ruleCodeImportOpen = false">
-    <section class="import-dialog rule-code-import-dialog" role="dialog" aria-modal="true" aria-labelledby="rule-code-import-title">
-      <header><div><span class="eyebrow">YUHUN FILTER CODE</span><h2 id="rule-code-import-title">导入御魂码</h2></div><button class="icon-button" title="关闭" @click="ruleCodeImportOpen = false"><X :size="18" /></button></header>
-      <div class="target-code-entry">
-        <label class="import-code-field"><span>御魂筛选码</span><textarea v-model="ruleCodeImportValue" rows="8" spellcheck="false" placeholder="粘贴游戏内导出的御魂码"></textarea></label>
-        <div class="target-entry-note"><strong>每个条件组会导入为一条预置方案</strong><span>方案类型由御魂码决定；星级、等级、副属性排除和固有属性等高级条件会一并保留。</span></div>
+  <div v-if="ruleCodeImportOpen" class="modal-backdrop" @click.self="!ruleImportBusy && (ruleCodeImportOpen = false)" @keydown.esc="!ruleImportBusy && (ruleCodeImportOpen = false)" @paste="handleRuleCodePaste">
+    <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="rule-code-import-title" :aria-busy="ruleImportBusy !== null">
+      <header><div><span class="eyebrow">PRESET RULE</span><h2 id="rule-code-import-title">导入规则配置</h2></div><button class="icon-button" title="关闭" :disabled="ruleImportBusy !== null" @click="ruleCodeImportOpen = false"><X :size="18" /></button></header>
+      <div class="target-entry-tabs" role="tablist" aria-label="规则添加方式">
+        <button role="tab" :aria-selected="ruleEntryMode === 'code'" :class="{ active: ruleEntryMode === 'code' }" :disabled="ruleImportBusy !== null" @click="ruleEntryMode = 'code'"><Import :size="16" />御魂码导入</button>
+        <button role="tab" data-testid="manual-rule-tab" :aria-selected="ruleEntryMode === 'manual'" :class="{ active: ruleEntryMode === 'manual' }" :disabled="ruleImportBusy !== null" @click="ruleEntryMode = 'manual'"><Pencil :size="16" />手动配置</button>
       </div>
-      <footer><span>导入后默认启用，数据仅保存在本机自动会话</span><button class="primary" data-testid="confirm-import-yuhun-code" :disabled="ruleCodeImportValue.trim() === '' || !!store.busy" @click="importRuleCode"><Import :size="17" />{{ store.busy ?? '解析并导入' }}</button></footer>
+      <div v-if="ruleEntryMode === 'code'" class="target-code-entry">
+        <label class="import-code-field"><span>御魂筛选码</span><textarea v-model="ruleCodeImportValue" :disabled="ruleImportBusy !== null" rows="6" spellcheck="false" placeholder="粘贴游戏内导出的御魂码，或从下方识别二维码"></textarea></label>
+        <section class="team-code-qr-panel" aria-labelledby="rule-code-qr-title">
+          <div><ScanQrCode :size="19" /><span><strong id="rule-code-qr-title">从剪贴板或二维码图片导入</strong><small>图片仅在浏览器中识别；御魂码通过解码服务解析。</small></span></div>
+          <div class="team-code-qr-actions">
+            <button type="button" data-testid="choose-yuhun-code-qr" :disabled="ruleImportBusy !== null" @click="ruleQrInput?.click()"><LoaderCircle v-if="ruleImportBusy === 'image'" class="spin" :size="15" /><ImageUp v-else :size="15" />选择二维码图片</button>
+            <button type="button" data-testid="read-yuhun-code-clipboard" :disabled="ruleImportBusy !== null" @click="recognizeRuleCode('clipboard')"><LoaderCircle v-if="ruleImportBusy === 'clipboard'" class="spin" :size="15" /><ClipboardPaste v-else :size="15" />读取剪贴板</button>
+            <input ref="ruleQrInput" type="file" accept="image/*" hidden @change="readRuleQrImage" />
+          </div>
+        </section>
+        <div class="target-entry-note"><strong>支持 Ctrl+V / Cmd+V 直接粘贴</strong><span>可以粘贴御魂码文字，也可以粘贴包含二维码的截图。</span></div>
+        <div class="target-entry-note"><strong>每个条件组会导入为一条规则</strong><span>弃置或强化类型由御魂码决定；星级、等级、副属性排除和固有属性等高级条件会一并保留。</span></div>
+        <div v-if="ruleImportMessage" class="target-import-feedback" :class="ruleImportFailed ? 'error' : ruleImportBusy ? 'loading' : 'success'" :role="ruleImportFailed ? 'alert' : 'status'">
+          <TriangleAlert v-if="ruleImportFailed" :size="16" /><LoaderCircle v-else-if="ruleImportBusy" class="spin" :size="16" /><Check v-else :size="16" /><span>{{ ruleImportMessage }}</span>
+        </div>
+      </div>
+      <div v-else class="rule-form">
+        <label class="rule-name"><span>规则池</span><select v-model="rulePool"><option value="discard">弃置规则池</option><option value="enhance">强化规则池</option></select></label>
+        <label class="rule-name"><span>规则名称</span><input v-model="ruleLabel" maxlength="80" placeholder="例如：针女输出胚子" /></label>
+        <YuhunConditionEditor v-model="ruleCriteria" />
+      </div>
+      <footer v-if="ruleEntryMode === 'code'"><span>导入后默认启用，规则保存在本机自动会话</span><button class="primary" data-testid="confirm-import-yuhun-code" :disabled="ruleCodeImportValue.trim() === '' || ruleImportBusy !== null || !!store.busy" @click="importRuleCode"><LoaderCircle v-if="ruleImportBusy === 'decode'" class="spin" :size="17" /><Import v-else :size="17" />{{ ruleImportBusy === 'decode' ? '正在解码…' : '解码并导入' }}</button></footer>
+      <footer v-else><span>保存后默认启用并进入{{ rulePool === 'discard' ? '弃置' : '强化' }}规则池</span><button class="primary" :disabled="ruleLabel.trim() === '' || !!store.busy" @click="saveRule"><Save :size="17" />保存并启用</button></footer>
     </section>
   </div>
 

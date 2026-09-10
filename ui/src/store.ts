@@ -79,6 +79,7 @@ import { TEAM_CALCULATION_ALGORITHM_VERSION, TEAM_CALCULATION_SEARCH_DEFAULTS } 
 import { ensurePerformanceBenchmark } from "./hardware-benchmark.js";
 import { uploadPerformanceRecord, uploadTeamTarget } from "./telemetry.js";
 import { decodeTeamCode, decodeYuhunCode, encodeYuhunDraft } from "./onmyoji-api.js";
+import { downloadYuhunCodeQr, yuhunCodeQrDataUrl } from "./yuhun-code-qr-export.js";
 
 export interface ImportedTeamTarget {
   readonly id: string;
@@ -262,6 +263,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const teamCalculationPaused = ref(false);
   const restoring = ref(false);
   const restoreCompleted = ref(false);
+  let restorePromise: Promise<void> | null = null;
   let rawSnapshotBuffer: ArrayBuffer | null = null;
   let snapshotNeedsPersist = false;
   let sessionReady = false;
@@ -708,8 +710,14 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     }
   }
 
-  async function restoreLocalSession(): Promise<void> {
-    if (restoring.value || restoreCompleted.value) return;
+  function restoreLocalSession(): Promise<void> {
+    if (restorePromise !== null) return restorePromise;
+    if (restoreCompleted.value) return Promise.resolve();
+    restorePromise = restoreWorkbenchSession();
+    return restorePromise;
+  }
+
+  async function restoreWorkbenchSession(): Promise<void> {
     restoring.value = true;
     sessionReady = false;
     busy.value = "正在恢复本地工作台";
@@ -793,11 +801,16 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         yuhunDecisions.value = stored.session.yuhunDecisions ?? null;
         yuhunDecisionFacets.value = null;
       }
-      plan.value = null;
-      simulation.value = null;
-      checklist.value = null;
+      // The saved plan and its gates belong to the snapshot verified above.
+      // A fresh Worker has no generated plan, so its initial gates cannot
+      // replace the completed codec round-trip and preview checks.
+      plan.value = stored.session.plan ?? null;
+      simulation.value = plan.value === null ? null : stored.session.simulation ?? null;
+      checklist.value = plan.value === null ? null : stored.session.checklist ?? null;
       actuals.value = { ...stored.session.actuals };
-      gateState.value = await client.getGateState();
+      gateState.value = plan.value === null
+        ? await client.getGateState()
+        : { ...stored.session.gateState };
       targetViewState.value = stored.session.viewState === null || stored.session.viewState === undefined
         ? null
         : JSON.parse(JSON.stringify(stored.session.viewState)) as WorkbenchViewStateV1;
@@ -820,6 +833,16 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     } catch (reason) {
       fail(reason);
     }
+  }
+
+  function queryPreviewYuhun(code: "D" | "E", index: number, pool: PlanSummaryDTO["groups"][number]["pool"], page = 1, search = ""): Promise<PageDTO<InventoryRowDTO>> {
+    if (!plan.value) return Promise.reject(new Error("请先生成双码"));
+    const groups = plan.value.groups;
+    const collect = (kind: "D" | "E") => groups.filter(group => group.code === kind && group.pool === (kind === "D" ? "normal" : "combined")).sort((a, b) => a.index - b.index).map(group => {
+      if (!group.criteria) throw new Error("此方案未保存筛选条件，请重新生成双码");
+      return JSON.parse(JSON.stringify(group.criteria)) as FilterCriteria;
+    });
+    return client.queryInventory({ page, pageSize: 25, search, preview: { code, index, pool, discard: collect("D"), rescue: collect("E") } });
   }
 
   function queryYuhunDetails(ids: readonly string[]): Promise<readonly TeamCalculationYuhunDTO[]> {
@@ -1545,24 +1568,31 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan.value = null;
     gateState.value = {};
     try {
-      const source = await decodeYuhunCode(existingFilterCode.value.trim());
-      if (source.warnings.length > 0) throw new Error("现有筛选码包含无法忽略的解析警告");
-      const generated: GeneratedPlanDTO = await client.generatePlan({ headerHex: source.headerHex, staticPolicy: staticPolicy.value });
+      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value });
+      const encode = (draft: NonNullable<GeneratedPlanDTO["discardDraft"]>) => encodeYuhunDraft({ planKind: draft.planKind, groups: draft.groups });
       const [discard, rescue] = await Promise.all([
-        generated.discardDraft === null ? Promise.resolve(null) : encodeYuhunDraft(generated.discardDraft),
-        generated.rescueDraft === null ? Promise.resolve(null) : encodeYuhunDraft(generated.rescueDraft)
+        generated.discardDraft === null ? Promise.resolve(null) : encode(generated.discardDraft),
+        generated.rescueDraft === null ? Promise.resolve(null) : encode(generated.rescueDraft)
       ]);
       const invalid = [discard, rescue].find((entry) => entry !== null && entry.share.warnings.length > 0);
       if (invalid !== undefined) throw new Error("服务生成的御魂码包含无法忽略的解析警告");
+      let resolvedHeader: string | null = null;
       for (const [draft, encoded] of [[generated.discardDraft, discard], [generated.rescueDraft, rescue]] as const) {
         if (!draft || !encoded) continue;
+        if (!/^[0-9a-f]{32}$/i.test(encoded.share.headerHex)) throw new Error("服务返回的御魂码标识无效");
+        if (resolvedHeader !== null && resolvedHeader !== encoded.share.headerHex.toLowerCase()) throw new Error("双码使用的标识不一致，请重新生成");
+        resolvedHeader = encoded.share.headerHex.toLowerCase();
         const decoded = await decodeYuhunCode(encoded.yuhunCode);
-        const expected = filterShareFromDraft(draft);
+        const expected = filterShareFromDraft({ ...draft, headerHex: resolvedHeader });
         const canonical = (share: typeof decoded) => filterShareFromDraft({ headerHex: share.headerHex, planKind: share.planKind === "discard" ? "discard" : "enhance", groups: share.groups.map(group => ({ name: group.name, criteria: group.criteria })) });
         if (decoded.warnings.length || decoded.planKind !== expected.planKind || JSON.stringify(canonical(decoded)) !== JSON.stringify(expected)) throw new Error("编码往返不一致，不能使用本次双码");
       }
       plan.value = {
         ...generated.summary,
+        groups: generated.summary.groups.map(group => {
+          const criteria = (group.code === "D" ? discard : rescue)?.share.groups[group.index]?.criteria;
+          return { ...group, ...(criteria ? { criteria } : {}) };
+        }),
         discardCode: discard?.yuhunCode ?? null,
         rescueCode: rescue?.yuhunCode ?? null
       };
@@ -1571,6 +1601,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       actuals.value = {};
       gateState.value = await client.getGateState();
       notice.value = "双码已完成编码往返和当前库存保留保护验证；请按预演数量在游戏中核对";
+      await persistSessionNow();
     } catch (reason) {
       fail(reason);
     } finally {
@@ -1656,17 +1687,19 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     notice.value = method === "clipboard" ? "已复制到剪贴板" : "已通过兼容模式复制";
   }
 
-  function downloadCode(kind: "discard" | "rescue"): void {
-    if (!copyAllowed.value || plan.value === null) throw new Error("严格门禁尚未全部通过");
-    const code = kind === "discard" ? plan.value.discardCode : plan.value.rescueCode;
-    if (code === null) throw new Error("当前方案没有可下载的码");
-    downloadJson(`yuhun-${kind}.private.json`, {
-      schemaVersion: 1,
-      kind: "onmyoji-yuhun-filter-code",
-      code,
-      containsAccountDerivedData: true,
-      doNotCommit: true
-    });
+  async function downloadCode(kind: "discard" | "rescue"): Promise<void> {
+    try {
+      if (!copyAllowed.value || plan.value === null) throw new Error("严格门禁尚未全部通过");
+      const code = kind === "discard" ? plan.value.discardCode : plan.value.rescueCode;
+      if (code === null) throw new Error("当前方案没有可下载的码");
+      const exportingPlan = plan.value;
+      const image = await yuhunCodeQrDataUrl(code);
+      if (!copyAllowed.value || plan.value !== exportingPlan) throw new Error("方案已变更，请使用最新方案导出二维码");
+      downloadYuhunCodeQr(image, kind);
+      notice.value = `已导出${kind === "discard" ? "弃置" : "捡回"}码二维码图片`;
+    } catch (reason) {
+      fail(reason);
+    }
   }
 
   function makeProject(): SavedProjectV1 {
@@ -1905,7 +1938,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
     performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount, teamCalculationSchedulerDebugEnabled, teamCalculationSchedulerDebugLog,
-    importSnapshot, loadInventory, queryYuhunDetails, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
+    importSnapshot, loadInventory, queryYuhunDetails, queryPreviewYuhun, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,

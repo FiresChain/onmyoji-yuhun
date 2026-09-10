@@ -141,8 +141,15 @@ This is the main configuration surface.
 - The rule editor selects suits (search/category picker), positions, main stats,
   boss-yuhun intrinsic stats, included/excluded substats, and substat-count
   conditions.
-- A yuhun filter code can be decoded into one preset rule per condition group,
-  preserving supported advanced criteria.
+- New rules use a shared dialog with **Yuhun-code import** and **Manual setup**
+  tabs, matching the team import layout. All add/import buttons open the code
+  tab by default. Pool add buttons preselect that pool for manual setup;
+  editing an existing rule opens its dedicated editor.
+- Code import accepts text, a selected QR image, clipboard text/images, and
+  pasted screenshots. Images are scanned locally; the existing codec service
+  decodes the recognized code on explicit submission. Loading and failures
+  appear inside the dialog. Each condition group becomes one enabled rule,
+  preserving supported advanced criteria and the pool encoded in the code.
 
 ### 3. Analysis Results (`ui/src/views/analysis.vue`)
 
@@ -159,10 +166,29 @@ This is the main configuration surface.
 
 ### 4. Dual Codes, Preview, and Validation (`ui/src/views/codes.vue`)
 
-- Accepts an existing importable yuhun filter code only to obtain its 16-byte
-  header, then generates and previews the D discard code and E rescue code.
-- Shows cleanup/capacity comparison metrics, both codes, read-only generated
-  rule groups, an account-pool funnel, and warnings about unexpected historical
+- Generates and previews the D discard and E rescue codes directly after
+  analysis, without a Header-source field. The encode API resolves its default
+  ID; the frontend sends only plan kind and groups. Local matching uses an
+  internal placeholder Header that is never sent to the encoder. Round-trip
+  validation checks the actual service-selected ID and all generated criteria.
+- Download actions export the exact code as a PNG QR image with a quiet zone.
+  Generation stays local and export still requires the copy gates. A code too
+  large for one QR image reports an error and remains available for copying.
+- Shows cleanup/capacity comparison metrics and side-by-side D discard / E
+  rescue panels styled like the target rule pools (stacked on mobile). Each
+  panel contains its code and rule rows with compact icon buttons for View rule
+  and View matched yuhun, matching the target rule pools. Rule details reuse YuhunConditionEditor in a read-only dialog.
+  Matched inventory opens a searchable, paginated dialog with main/sub/intrinsic
+  stats, using the same Worker-side D/E preview matcher. E rules allow switching
+  between new, historical, and combined discard pools. Old sessions without
+  criteria prompt regeneration.
+- Completed codes, preview criteria/counts, copy gates, and reconciliation state
+  persist in the private local session and restore after snapshot hash
+  verification without regenerating codes or calling the codec API. Generation
+  waits for the local save; changing inputs still invalidates the saved plan.
+  Startup and route guards share the pending restoration so refresh stays on
+  the requested page instead of redirecting before data is ready.
+- Shows an account-pool funnel and warnings about unexpected historical
   discard-pool restores.
 - Copying/downloading codes and exporting the mobile handoff remain disabled
   until every strict gate passes: valid snapshot/targets/policy/header, group

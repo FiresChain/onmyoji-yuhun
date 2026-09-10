@@ -18,7 +18,7 @@ function scanCanvas(canvas: HTMLCanvasElement): string | null {
   return result?.data.trim() || null;
 }
 
-function scanImageSource(source: CanvasImageSource, width: number, height: number): string {
+function scanImageSource(source: CanvasImageSource, width: number, height: number, validate: (value: string) => string): string {
   const safeWidth = Math.max(1, width);
   const safeHeight = Math.max(1, height);
   for (const scale of QR_SCAN_SCALES) {
@@ -29,9 +29,9 @@ function scanImageSource(source: CanvasImageSource, width: number, height: numbe
     const context = canvasContext(canvas);
     context.drawImage(source, 0, 0, canvas.width, canvas.height);
     const value = scanCanvas(canvas);
-    if (value !== null) return validateTeamCodeQrText(value);
+    if (value !== null) return validate(value);
   }
-  throw new Error("未识别到阵容码二维码，请确保二维码完整、清晰且未被遮挡");
+  throw new Error("未识别到二维码，请确保二维码完整、清晰且未被遮挡");
 }
 
 function imageFromBlob(blob: Blob): Promise<HTMLImageElement> {
@@ -62,14 +62,14 @@ export interface ClipboardTeamCodeResult {
 }
 
 /** Reads an existing screenshot or image without uploading it anywhere. */
-export async function decodeTeamCodeFromQrImage(file: Blob): Promise<string> {
+async function decodeCodeFromQrImage(file: Blob, validate: (value: string) => string): Promise<string> {
   if (!file.type.startsWith("image/")) throw new Error("请选择二维码图片");
   const image = await imageFromBlob(file);
-  return scanImageSource(image, image.naturalWidth, image.naturalHeight);
+  return scanImageSource(image, image.naturalWidth, image.naturalHeight, validate);
 }
 
 /** Reads text or an image from the Async Clipboard API after a button click. */
-export async function readTeamCodeFromClipboard(): Promise<ClipboardTeamCodeResult> {
+async function readCodeFromClipboard(validate: (value: string) => string, label: string): Promise<ClipboardTeamCodeResult> {
   if (navigator.clipboard?.read === undefined) {
     throw new Error("当前浏览器不支持读取剪贴板，请直接按 Ctrl+V（macOS 为 Cmd+V）粘贴");
   }
@@ -78,21 +78,47 @@ export async function readTeamCodeFromClipboard(): Promise<ClipboardTeamCodeResu
     for (const item of items) {
       if (!item.types.includes("text/plain")) continue;
       const text = await (await item.getType("text/plain")).text();
-      if (text.trim().startsWith("#TA#")) {
-        return { code: validateTeamCodeQrText(text), source: "text" };
+      try {
+        return { code: validate(text), source: "text" };
+      } catch {
+        // Clipboard HTML may include unrelated text alongside a QR image.
       }
     }
     for (const item of items) {
       const imageType = item.types.find((type) => type.startsWith("image/"));
       if (imageType !== undefined) {
-        return { code: await decodeTeamCodeFromQrImage(await item.getType(imageType)), source: "image" };
+        return { code: await decodeCodeFromQrImage(await item.getType(imageType), validate), source: "image" };
       }
     }
-    throw new Error("剪贴板中没有 #TA# 阵容码或二维码图片");
+    throw new Error(`剪贴板中没有${label}或二维码图片`);
   } catch (reason) {
     if (reason instanceof DOMException && reason.name === "NotAllowedError") {
       throw new Error("浏览器未允许读取剪贴板，请直接按 Ctrl+V（macOS 为 Cmd+V）粘贴");
     }
     throw reason;
   }
+}
+
+export function validateYuhunCodeQrText(value: string): string {
+  const normalized = value.replace(/\s+/g, "");
+  if (!normalized || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.replace(/=+$/, "").length % 4 === 1) {
+    throw new Error("内容不是有效的御魂筛选码，请使用游戏内导出的御魂码或二维码");
+  }
+  return normalized;
+}
+
+export function decodeTeamCodeFromQrImage(file: Blob): Promise<string> {
+  return decodeCodeFromQrImage(file, validateTeamCodeQrText);
+}
+
+export function readTeamCodeFromClipboard(): Promise<ClipboardTeamCodeResult> {
+  return readCodeFromClipboard(validateTeamCodeQrText, " #TA# 阵容码");
+}
+
+export function decodeYuhunCodeFromQrImage(file: Blob): Promise<string> {
+  return decodeCodeFromQrImage(file, validateYuhunCodeQrText);
+}
+
+export function readYuhunCodeFromClipboard(): Promise<ClipboardTeamCodeResult> {
+  return readCodeFromClipboard(validateYuhunCodeQrText, "御魂筛选码");
 }

@@ -63,7 +63,7 @@ export async function decodeYuhunCode(yuhunCode: string): Promise<YuhunFilterSha
   })) };
 }
 
-export async function encodeYuhunDraft(draft: YuhunFilterDraft): Promise<{ readonly yuhunCode: string; readonly share: YuhunFilterShare }> {
+export async function encodeYuhunDraft(draft: Omit<YuhunFilterDraft, "headerHex"> & { readonly headerHex?: string; readonly id?: string }): Promise<{ readonly yuhunCode: string; readonly share: YuhunFilterShare }> {
   const groups = draft.groups.map(group => {
     const typeIds = group.criteria?.typeIds ?? (group.criteria?.types ?? []).map(name => {
       const id = YUHUN_SUIT_IDS_BY_NAME[canonicalYuhunName(name) as keyof typeof YUHUN_SUIT_IDS_BY_NAME];

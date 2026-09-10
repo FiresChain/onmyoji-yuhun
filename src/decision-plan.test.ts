@@ -61,3 +61,21 @@ test("analysis and generation work without +15 inventory or speed templates", ()
   assert.equal(plan.summary.cleanupComparison?.extraCleanupCount, 0);
   assert.equal(workflow.getGateState().retainedItemsProtected, true);
 });
+
+test("preview inventory uses the exact D/E pool membership and excludes locked pieces", () => {
+  const workflow = new YuhunWorkflow();
+  const items = [item("new"), item("history", { garbage: true }), item("locked", { lock: true }), item("outside", { name: "火灵", suitId: 300003 })];
+  Object.assign(workflow, { items });
+  const criteria = filterShareFromDraft({ headerHex: header, planKind: "discard", groups: [{ name: "rule", criteria: { types: ["招财猫"] } }] }).groups[0]!.criteria;
+  const preview = { discard: [criteria], rescue: [criteria], index: 0 };
+  const rows = (code: "D" | "E", pool: "normal" | "new-garbage" | "historical-garbage" | "combined") => workflow.queryInventory({ preview: { ...preview, code, pool } });
+  assert.deepEqual(rows("D", "normal").rows.map(row => row.row), [1]);
+  assert.deepEqual(rows("E", "new-garbage").rows.map(row => row.row), [1]);
+  assert.deepEqual(rows("E", "historical-garbage").rows.map(row => row.row), [2]);
+  assert.deepEqual(rows("E", "combined").rows.map(row => row.row), [1, 2]);
+  assert.equal(workflow.queryInventory({ preview: { ...preview, code: "E", pool: "combined" }, search: "火灵" }).total, 0);
+  const paged = workflow.queryInventory({ preview: { ...preview, code: "E", pool: "combined" }, pageSize: 1, page: 2 });
+  assert.equal(paged.total, 2);
+  assert.deepEqual(paged.rows.map(row => row.row), [2]);
+  assert.equal(workflow.queryInventory().total, 4);
+});
