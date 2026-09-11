@@ -9,6 +9,8 @@ import type {
   InventoryRowDTO,
   PageDTO,
   PlanSummaryDTO,
+  PlanComparisonQuery,
+  PlanComparisonDTO,
   SimulationSummaryDTO,
   SnapshotSummaryDTO,
   SpeedCategoryDecision,
@@ -312,6 +314,11 @@ export class WorkflowClient {
 
   queryInventory(query: InventoryQuery): Promise<PageDTO<InventoryRowDTO>> {
     return this.call("queryInventory", [query]);
+  }
+
+  async comparePlans(query: PlanComparisonQuery): Promise<PlanComparisonDTO> {
+    await this.snapshotRestore;
+    return this.call("comparePlans", [query]);
   }
 
   queryYuhunDetails(ids: readonly string[]): Promise<readonly TeamCalculationYuhunDTO[]> {

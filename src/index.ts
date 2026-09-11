@@ -115,6 +115,9 @@ export {
   remainingUpgradeRolls
 } from "./yuhun-potential.js";
 export { buildYuhunDecisionRows } from "./yuhun-decision.js";
+export { comparePlanCriteria } from "./plan-comparison.js";
+export type { PlanCriteria, PlanDifference, PlanComparisonFilter, PlanComparisonCounts, PlanComparisonResult } from "./plan-comparison.js";
+export type { PlanComparisonQuery, PlanComparisonDTO, PlanComparisonRowDTO } from "./workflow.js";
 export type {
   CbgExport,
   CbgYuhunItem,

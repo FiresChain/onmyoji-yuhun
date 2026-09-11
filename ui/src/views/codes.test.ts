@@ -13,7 +13,7 @@ describe("generated rule inspection", () => {
     mockStore.analysis = {};
     mockStore.plan = { desiredFreeSlots: 500, requiredRelease: 316, finalNewDiscardCount: 126, desiredFreeSlotsReached: false, groups: [] };
     mockStore.setDesiredFreeSlots.mockImplementation(value => { mockStore.desiredFreeSlots = Math.max(0, Math.min(2800, Math.round(value / 100) * 100)); });
-    const wrapper = mount(Codes, { global: { stubs: { EChart: true } } });
+    const wrapper = mount(Codes);
     const input = wrapper.get('#desired-free-slots');
     expect(input.attributes('max')).toBe('2800');
     expect(input.attributes('step')).toBe('100');
@@ -29,7 +29,7 @@ describe("generated rule inspection", () => {
     const criteria = { ...emptyYuhunFilter(), positions: [2], mainStats: ["speed"], subStats: [{ stat: "crit", requirement: "include" }] };
     mockStore.plan = { discardGroupCount: 1, rescueGroupCount: 0, discardCode: "example", rescueCode: null, groups: [{ code: "D", index: 0, name: "测试规则", pool: "normal", expected: 1, criteria }] };
     mockStore.queryPreviewYuhun.mockResolvedValue({ page: 1, pageSize: 25, total: 1, rows: [{ row: 1, suit: "招财猫", position: 2, star: 6, level: 0, mainStat: "speed", mainValue: 12, subStatValues: [{ stat: "crit", value: .03 }], intrinsicStats: [], garbage: false }] });
-    const wrapper = mount(Codes, { global: { stubs: { EChart: true, YuhunSuitPicker: true } } });
+    const wrapper = mount(Codes, { global: { stubs: { YuhunSuitPicker: true } } });
     const ruleButtons = wrapper.findAll('[data-testid="preview-rule-D-0"] .icon-button');
     expect(ruleButtons).toHaveLength(2);
     expect(ruleButtons.every(button => button.text() === "" && button.attributes("aria-label"))).toBe(true);

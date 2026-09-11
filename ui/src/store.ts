@@ -9,6 +9,8 @@ import type {
   InventoryRowDTO,
   PageDTO,
   PlanSummaryDTO,
+  PlanComparisonDTO,
+  PlanComparisonQuery,
   SimulationSummaryDTO,
   SnapshotSummaryDTO,
   SpeedCategoryDecision,
@@ -39,6 +41,9 @@ import {
   parseHandoff,
   saveProject,
   saveWorkbenchSession,
+  loadSavedPlans,
+  persistSavedPlan,
+  deleteSavedPlan,
   type MobileHandoffV1,
   type SavedProjectV1,
   type SceneDataExportV1,
@@ -78,8 +83,11 @@ import {
 } from "./performance.js";
 import { TEAM_CALCULATION_ALGORITHM_VERSION, TEAM_CALCULATION_SEARCH_DEFAULTS } from "../../src/browser.js";
 import { ensurePerformanceBenchmark } from "./hardware-benchmark.js";
-import { uploadPerformanceRecord, uploadTeamTarget } from "./telemetry.js";
+import { setTelemetryConsent, storedTelemetryConsent, telemetryConsent, uploadPerformanceRecord, uploadTeamTarget, type TelemetryKind } from "./telemetry.js";
+import { loadNotificationState, saveNotificationState, RELEASE_NOTIFICATIONS, WARNING_READING_MS, type NotificationState, type ReleaseNotification } from "./notifications.js";
 import { decodeTeamCode, decodeYuhunCode, encodeYuhunDraft } from "./onmyoji-api.js";
+import { loadYuhunUserId, normalizeYuhunUserId, saveYuhunUserId } from "./user-id.js";
+import { criteriaFromPlan, criteriaFromShare, exportPlanFile, normalizePlanCode, parsePlanFile, planName, type SavedPlan } from "./plan-library.js";
 import { downloadYuhunCodeQr, yuhunCodeQrDataUrl } from "./yuhun-code-qr-export.js";
 
 export interface ImportedTeamTarget {
@@ -243,6 +251,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const teamCalculationProgress = ref<Record<string, TeamCalculationProgressState>>({});
   const presetRules = ref<PresetRule[]>([]);
   const plan = ref<PlanSummaryDTO | null>(null);
+  const savedPlans = shallowRef<readonly SavedPlan[]>([]);
+  const planLibraryBusy = ref(false);
+  const planLibraryLoaded = ref(false);
+  const comparisonBaseId = ref("");
+  const comparisonNextId = ref("");
+  let planLibraryLoadPromise: Promise<void> | null = null;
   const simulation = ref<SimulationSummaryDTO | null>(null);
   const checklist = ref<ImportChecklistDTO | null>(null);
   const mobileHandoff = ref<MobileHandoffV1 | null>(null);
@@ -253,7 +267,20 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const sceneDataImportRevision = ref(0);
   const templateIds = ref<Array<"zhaocai-speed" | "scattered-speed">>(["zhaocai-speed", "scattered-speed"]);
   const riskTier = ref<"tier0" | "tier1">("tier1");
-  const defaultDisposition = ref<"retain" | "discard">("retain");
+  const defaultDisposition = ref<"retain" | "discard">("discard");
+  const yuhunUserId = ref(loadYuhunUserId());
+  const notificationState = ref(loadNotificationState());
+  const notificationDialog = ref<"warning" | "sharing" | "updates" | "inbox" | null>(null);
+  const notificationError = ref("");
+  const displayedUpdates = shallowRef<readonly ReleaseNotification[]>([]);
+  const unreadNotifications = computed(() => RELEASE_NOTIFICATIONS.filter(entry => !notificationState.value.readVersions.includes(entry.version)));
+  const dataSharing = ref({ "team-target": telemetryConsent("team-target"), performance: telemetryConsent("performance") });
+  const sharingDraft = ref({ "team-target": storedTelemetryConsent("team-target") ?? true, performance: storedTelemetryConsent("performance") ?? true });
+  const warningReadMs = ref(0);
+  const warningSecondsRemaining = computed(() => Math.ceil(Math.max(0, WARNING_READING_MS - warningReadMs.value) / 1000));
+  let warningTickAt: number | null = null;
+  let warningWasVisible = false;
+  let notificationFromInbox = false;
   const desiredFreeSlotsPreference = ref(DEFAULT_DESIRED_FREE_SLOTS);
   const desiredFreeSlotsMaximum = computed(() => maximumDesiredFreeSlots(analysis.value?.markedDiscardProjection.discardCount ?? 0));
   const desiredFreeSlots = computed(() => analysis.value === null ? desiredFreeSlotsPreference.value
@@ -286,6 +313,93 @@ export const useWorkbenchStore = defineStore("workbench", () => {
 
   function now(): number {
     return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  }
+
+  function initializeNotifications(): void {
+    if (notificationDialog.value !== null) return;
+    if (!notificationState.value.warningAcknowledged) {
+      warningReadMs.value = 0;
+      warningTickAt = null;
+      warningWasVisible = false;
+      notificationDialog.value = "warning";
+    } else if (!notificationState.value.sharingConfirmed) notificationDialog.value = "sharing";
+    else if (unreadNotifications.value.length) {
+      displayedUpdates.value = unreadNotifications.value;
+      notificationDialog.value = "updates";
+    }
+  }
+
+  function tickWarningReading(visible: boolean): void {
+    if (notificationDialog.value !== "warning" || notificationState.value.warningAcknowledged) return;
+    const tick = now();
+    if (warningTickAt !== null && warningWasVisible) warningReadMs.value = Math.min(WARNING_READING_MS, warningReadMs.value + Math.max(0, tick - warningTickAt));
+    warningTickAt = tick;
+    warningWasVisible = visible;
+  }
+
+  function persistNotificationState(next: NotificationState): void {
+    saveNotificationState(next);
+    notificationState.value = next;
+    notificationError.value = "";
+  }
+
+  function confirmTestWarning(): void {
+    if (notificationDialog.value !== "warning") return;
+    if (notificationState.value.warningAcknowledged) { notificationDialog.value = "inbox"; return; }
+    if (warningSecondsRemaining.value > 0) return;
+    try {
+      persistNotificationState({ ...notificationState.value, warningAcknowledged: true });
+      notificationDialog.value = null;
+      initializeNotifications();
+    } catch (reason) { notificationError.value = reason instanceof Error ? reason.message : "保存失败"; }
+  }
+
+  function setDataSharingConsent(kind: TelemetryKind, enabled: boolean): void {
+    if (!setTelemetryConsent(kind, enabled)) throw new Error("无法保存共享设置，请重试");
+    dataSharing.value = { ...dataSharing.value, [kind]: enabled };
+  }
+
+  function confirmDataSharing(): void {
+    if (notificationDialog.value !== "sharing") return;
+    try {
+      setDataSharingConsent("team-target", sharingDraft.value["team-target"]);
+      setDataSharingConsent("performance", sharingDraft.value.performance);
+      persistNotificationState({ ...notificationState.value, sharingConfirmed: true, readVersions: [...new Set([...notificationState.value.readVersions, ...RELEASE_NOTIFICATIONS.map(entry => entry.version)])] });
+      notificationDialog.value = null;
+    } catch (reason) { notificationError.value = reason instanceof Error ? reason.message : "保存失败"; }
+  }
+
+  function openNotifications(): void {
+    initializeNotifications();
+    if (notificationDialog.value !== null) return;
+    notificationError.value = "";
+    notificationDialog.value = "inbox";
+  }
+
+  function viewNotification(version: string): void {
+    if (notificationDialog.value !== "inbox") return;
+    const entry = RELEASE_NOTIFICATIONS.find(item => item.version === version);
+    if (!entry) return;
+    notificationFromInbox = true;
+    displayedUpdates.value = [entry];
+    notificationDialog.value = "updates";
+  }
+
+  function reviewTestWarning(): void {
+    if (notificationDialog.value !== "inbox") return;
+    notificationError.value = "";
+    notificationDialog.value = "warning";
+  }
+
+  function closeNotifications(): void {
+    if (notificationDialog.value === "warning" || notificationDialog.value === "sharing") return;
+    try {
+      if (notificationDialog.value === "updates") {
+        persistNotificationState({ ...notificationState.value, readVersions: [...new Set([...notificationState.value.readVersions, ...displayedUpdates.value.map(entry => entry.version)])] });
+        notificationDialog.value = notificationFromInbox ? "inbox" : null;
+        notificationFromInbox = false;
+      } else notificationDialog.value = null;
+    } catch (reason) { notificationError.value = reason instanceof Error ? reason.message : "保存失败"; }
   }
 
   async function preparePerformanceBenchmark(): Promise<void> {
@@ -711,7 +825,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       staticPolicy.value = { ...staticPolicy.value, confirmed: true };
       inventory.value = await client.queryInventory({ page: 1, pageSize: 25 });
       gateState.value = await client.getGateState();
-      notice.value = `已导入 ${snapshot.value.total.toLocaleString()} 件御魂，文件名与账号字段未保留`;
+      notice.value = `已导入 ${snapshot.value.total.toLocaleString()} 件御魂`;
     } catch (reason) {
       fail(reason);
     } finally {
@@ -744,7 +858,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       snapshot.value = restoredSnapshot;
       templateIds.value = stored.session.settings.templateIds.filter((id): id is "zhaocai-speed" | "scattered-speed" => id === "zhaocai-speed" || id === "scattered-speed");
       riskTier.value = stored.session.settings.riskTier;
-      defaultDisposition.value = stored.session.settings.defaultDisposition ?? "retain";
+      defaultDisposition.value = stored.session.settings.defaultDisposition ?? "discard";
       desiredFreeSlotsPreference.value = stored.session.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
       budgetPerTenThousand.value = stored.session.settings.budgetPerTenThousand;
       staticPolicy.value = { ...stored.session.settings.staticPolicy };
@@ -853,6 +967,97 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       return JSON.parse(JSON.stringify(group.criteria)) as FilterCriteria;
     });
     return client.queryInventory({ page, pageSize: 25, search, preview: { code, index, pool, discard: collect("D"), rescue: collect("E") } });
+  }
+
+  function loadPlanLibrary(): Promise<void> {
+    if (planLibraryLoadPromise) return planLibraryLoadPromise;
+    if (planLibraryLoaded.value) return Promise.resolve();
+    planLibraryLoadPromise = loadSavedPlans().then(plans => {
+      savedPlans.value = plans;
+      comparisonBaseId.value = plans[1]?.id ?? plans[0]?.id ?? "";
+      comparisonNextId.value = plans.length > 1 ? plans[0]!.id : "";
+      planLibraryLoaded.value = true;
+    }).finally(() => { planLibraryLoadPromise = null; });
+    return planLibraryLoadPromise;
+  }
+
+  async function mutatePlanLibrary<T>(action: () => Promise<T>): Promise<T> {
+    await loadPlanLibrary();
+    if (planLibraryBusy.value) throw new Error("请等待方案操作完成");
+    planLibraryBusy.value = true;
+    try { return await action(); } finally { planLibraryBusy.value = false; }
+  }
+
+  async function addSavedPlan(input: Omit<SavedPlan, "schemaVersion" | "id" | "createdAt">): Promise<SavedPlan> {
+    const entry: SavedPlan = JSON.parse(JSON.stringify({ ...input, schemaVersion: 1, id: crypto.randomUUID(), createdAt: new Date().toISOString() }));
+    await persistSavedPlan(entry);
+    savedPlans.value = [entry, ...savedPlans.value];
+    if (!comparisonBaseId.value) comparisonBaseId.value = entry.id;
+    else comparisonNextId.value = entry.id;
+    return entry;
+  }
+
+  async function saveCurrentPlan(name: string): Promise<SavedPlan> {
+    if (!plan.value || !snapshot.value || !copyAllowed.value || busy.value !== null) throw new Error("请先完成方案生成");
+    const input = { name: planName(name), source: "generated" as const, snapshotSha256: snapshot.value.sha256,
+      discardCode: plan.value.discardCode, rescueCode: plan.value.rescueCode, criteria: criteriaFromPlan(plan.value) };
+    return mutatePlanLibrary(() => addSavedPlan(input));
+  }
+
+  async function importSavedPlan(input: { name: string; discardCode: string | null; rescueCode: string | null }, allowEmpty = false): Promise<SavedPlan> {
+    const name = planName(input.name);
+    const discardCode = normalizePlanCode(input.discardCode);
+    const rescueCode = normalizePlanCode(input.rescueCode);
+    if (!allowEmpty && !discardCode && !rescueCode) throw new Error("请至少填写一个御魂码");
+    return mutatePlanLibrary(async () => {
+      const [discard, rescue] = await Promise.all([
+        discardCode === null ? null : decodeYuhunCode(discardCode),
+        rescueCode === null ? null : decodeYuhunCode(rescueCode)
+      ]);
+      if (discard && rescue && discard.headerHex.toLowerCase() !== rescue.headerHex.toLowerCase()) throw new Error("弃置码与捡回码的用户 ID 不一致");
+      const criteria = { discard: discard ? criteriaFromShare(discard, "discard") : [], rescue: rescue ? criteriaFromShare(rescue, "enhance") : [] };
+      return addSavedPlan({ name, source: "imported", snapshotSha256: null, discardCode, rescueCode, criteria });
+    });
+  }
+
+  async function importSavedPlanFile(file: File): Promise<SavedPlan> {
+    if (file.size > 1_048_576) throw new Error("方案文件不能超过 1 MB");
+    const input = parsePlanFile(JSON.parse(await file.text()) as unknown);
+    return importSavedPlan(input, true);
+  }
+
+  async function renameSavedPlan(id: string, name: string): Promise<void> {
+    const normalized = planName(name);
+    await mutatePlanLibrary(async () => {
+      const entry = savedPlans.value.find(plan => plan.id === id);
+      if (!entry) throw new Error("方案不存在");
+      const updated = { ...entry, name: normalized };
+      await persistSavedPlan(updated);
+      savedPlans.value = savedPlans.value.map(plan => plan.id === id ? updated : plan);
+    });
+  }
+
+  async function removeSavedPlan(id: string): Promise<void> {
+    await mutatePlanLibrary(async () => {
+      await deleteSavedPlan(id);
+      savedPlans.value = savedPlans.value.filter(plan => plan.id !== id);
+      if (comparisonBaseId.value === id) comparisonBaseId.value = "";
+      if (comparisonNextId.value === id) comparisonNextId.value = "";
+    });
+  }
+
+  function exportSavedPlan(id: string): void {
+    const entry = savedPlans.value.find(plan => plan.id === id);
+    if (!entry) throw new Error("方案不存在");
+    downloadJson(`yuhun-plan-${entry.createdAt.slice(0, 10)}.private.json`, exportPlanFile(entry));
+  }
+
+  function compareSavedPlans(query: Omit<PlanComparisonQuery, "base" | "next">): Promise<PlanComparisonDTO> {
+    const base = savedPlans.value.find(plan => plan.id === comparisonBaseId.value);
+    const next = savedPlans.value.find(plan => plan.id === comparisonNextId.value);
+    if (!base || !next) throw new Error("请选择两个方案");
+    if (!snapshot.value) throw new Error("请先导入御魂快照");
+    return client.comparePlans({ ...query, base: base.criteria, next: next.criteria });
   }
 
   function queryYuhunDetails(ids: readonly string[]): Promise<readonly TeamCalculationYuhunDTO[]> {
@@ -984,10 +1189,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     decisions.value = null;
     yuhunDecisions.value = null;
     yuhunDecisionFacets.value = null;
-    plan.value = null;
-    simulation.value = null;
-    checklist.value = null;
-    gateState.value = {};
+    invalidateGeneratedPlan();
   }
 
   function invalidateTeamCalculationResults(): void {
@@ -1057,6 +1259,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       ? initialRequests.filter((request) => teamCalculationFor(request.id) === null)
       : initialRequests;
     if (!resume) {
+      invalidateAnalysisResults();
       teamCalculations.value = [];
       initializeTeamCalculationProgress(smartMode
         ? initialRequests
@@ -1218,10 +1421,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     client.resetTeamCalculations();
     invalidateTeamCalculationResults();
     progress.value = null;
-    if (busy.value === "正在准备计算" || busy.value === "正在计算阵容御魂搭配" || busy.value === "计算已暂停") {
+    if (busy.value === "正在准备计算" || busy.value === "正在计算阵容御魂搭配" || busy.value === "计算已暂停" || busy.value?.startsWith("正在运行每日性能测试")) {
       busy.value = null;
     }
-    notice.value = "已重置阵容计算结果；快照、目标与策略保持不变";
+    const sceneIds = targetScenePaths(targetCatalog.value).map(scene => scene.sceneId);
+    setTargetViewState(localCatalogOverlay(targetCatalog.value), sceneIds, sceneIds[0] ?? "", targetCatalog.value, "smart", "auto");
+    notice.value = "已清空计算结果，并恢复全选关卡、智能模式和自动降难度";
     scheduleSessionPersist();
   }
 
@@ -1554,12 +1759,36 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     const normalized = normalizeDesiredFreeSlots(next, analysis.value.markedDiscardProjection.discardCount);
     if (desiredFreeSlots.value === normalized) return;
     desiredFreeSlotsPreference.value = normalized;
+    invalidateGeneratedPlan();
+  }
+
+  function invalidateGeneratedPlan(): void {
     plan.value = null;
     simulation.value = null;
     checklist.value = null;
     mobileHandoff.value = null;
     actuals.value = {};
     gateState.value = {};
+  }
+
+  async function importYuhunUserId(code: string): Promise<string> {
+    if (busy.value !== null || restoring.value) throw new Error("请等待当前操作完成后再导入 ID");
+    if (code.trim() === "") throw new Error("请粘贴游戏中导出的御魂码");
+    busy.value = "正在识别御魂码 ID";
+    try {
+      const share = await decodeYuhunCode(code.trim().replace(/\s+/g, ""));
+      const id = normalizeYuhunUserId(share.headerHex);
+      if (id === null) throw new Error("未识别到有效的御魂码用户 ID");
+      saveYuhunUserId(id);
+      if (yuhunUserId.value !== id) {
+        yuhunUserId.value = id;
+        invalidateGeneratedPlan();
+        await persistSessionNow();
+      }
+      return id;
+    } finally {
+      busy.value = null;
+    }
   }
 
   function setRiskTier(next: "tier0" | "tier1"): void {
@@ -1587,12 +1816,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   async function generatePlan(): Promise<void> {
+    const userId = yuhunUserId.value;
     begin("正在生成并预演 D/E");
     plan.value = null;
     gateState.value = {};
     try {
       const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value, desiredFreeSlots: desiredFreeSlots.value });
-      const encode = (draft: NonNullable<GeneratedPlanDTO["discardDraft"]>) => encodeYuhunDraft({ planKind: draft.planKind, groups: draft.groups });
+      const encode = (draft: NonNullable<GeneratedPlanDTO["discardDraft"]>) => encodeYuhunDraft({ planKind: draft.planKind, groups: draft.groups, ...(userId === null ? {} : { id: userId }) });
       const [discard, rescue] = await Promise.all([
         generated.discardDraft === null ? Promise.resolve(null) : encode(generated.discardDraft),
         generated.rescueDraft === null ? Promise.resolve(null) : encode(generated.rescueDraft)
@@ -1603,6 +1833,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       for (const [draft, encoded] of [[generated.discardDraft, discard], [generated.rescueDraft, rescue]] as const) {
         if (!draft || !encoded) continue;
         if (!/^[0-9a-f]{32}$/i.test(encoded.share.headerHex)) throw new Error("服务返回的御魂码标识无效");
+        if (userId !== null && encoded.share.headerHex.toLowerCase() !== userId) throw new Error("服务返回的御魂码 ID 与设置不一致，请重新生成");
         if (resolvedHeader !== null && resolvedHeader !== encoded.share.headerHex.toLowerCase()) throw new Error("双码使用的标识不一致，请重新生成");
         resolvedHeader = encoded.share.headerHex.toLowerCase();
         const decoded = await decodeYuhunCode(encoded.yuhunCode);
@@ -1696,9 +1927,11 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     catalog: WorkbenchViewStateV1["catalog"],
     selectedSceneIds: readonly string[],
     focusedSceneId: string,
-    fullCatalog: readonly TargetDomain[] = catalog
+    fullCatalog: readonly TargetDomain[] = catalog,
+    teamSelectionMode = targetViewState.value?.teamSelectionMode ?? "smart",
+    smartDifficultyDecreaseCount = targetViewState.value?.smartDifficultyDecreaseCount ?? "auto"
   ): void {
-    targetViewState.value = JSON.parse(JSON.stringify({ catalog, selectedSceneIds, focusedSceneId })) as WorkbenchViewStateV1;
+    targetViewState.value = JSON.parse(JSON.stringify({ catalog, selectedSceneIds, focusedSceneId, teamSelectionMode, smartDifficultyDecreaseCount })) as WorkbenchViewStateV1;
     targetCatalog.value = JSON.parse(JSON.stringify(fullCatalog)) as readonly TargetDomain[];
   }
 
@@ -1759,7 +1992,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     if (project === null) throw new Error("没有已保存的本地项目");
     templateIds.value = project.settings.templateIds.filter((id): id is "zhaocai-speed" | "scattered-speed" => id === "zhaocai-speed" || id === "scattered-speed");
     riskTier.value = project.settings.riskTier;
-    defaultDisposition.value = project.settings.defaultDisposition ?? "retain";
+    defaultDisposition.value = project.settings.defaultDisposition ?? "discard";
     budgetPerTenThousand.value = project.settings.budgetPerTenThousand;
     staticPolicy.value = project.settings.staticPolicy;
     desiredFreeSlotsPreference.value = project.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
@@ -1945,7 +2178,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     targetViewState.value = null;
     targetCatalog.value = TARGET_CATALOG;
     staticPolicy.value = { ...DEFAULT_POLICY };
-    defaultDisposition.value = "retain";
+    defaultDisposition.value = "discard";
     desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
     sessionReady = true;
     restoreCompleted.value = true;
@@ -1965,11 +2198,14 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
     performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount, teamCalculationSchedulerDebugEnabled, teamCalculationSchedulerDebugLog,
     importSnapshot, loadInventory, queryYuhunDetails, queryPreviewYuhun, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
+    savedPlans, planLibraryBusy, planLibraryLoaded, comparisonBaseId, comparisonNextId, loadPlanLibrary, saveCurrentPlan, importSavedPlan, importSavedPlanFile, renameSavedPlan, removeSavedPlan, exportSavedPlan, compareSavedPlans,
+    notificationState, notificationDialog, notificationError, displayedUpdates, unreadNotifications, dataSharing, sharingDraft, warningSecondsRemaining,
+    initializeNotifications, tickWarningReading, confirmTestWarning, confirmDataSharing, setDataSharingConsent, openNotifications, viewNotification, reviewTestWarning, closeNotifications,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
     invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount, setTeamCalculationSchedulerDebugEnabled, clearTeamCalculationSchedulerDebugLog,
-    defaultDisposition, setDefaultDisposition, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
+    defaultDisposition, setDefaultDisposition, yuhunUserId, importYuhunUserId, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets
   };

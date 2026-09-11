@@ -6,7 +6,7 @@ export const STEPS = [
   { path: "/targets", id: "targets", label: "目标与策略" },
   { path: "/analysis", id: "analysis", label: "分析结果" },
   { path: "/codes", id: "codes", label: "双码与预演" },
-  { path: "/reconcile", id: "reconcile", label: "游戏对账" }
+  { path: "/compare", id: "compare", label: "方案比对" }
 ] as const;
 
 export const router = createRouter({
@@ -16,6 +16,7 @@ export const router = createRouter({
     { path: "/", redirect: "/snapshot" },
     ...STEPS.map((step) => ({ path: step.path, name: step.id, component: () => import(`./views/${step.id}.vue`) })),
     { path: "/policy", redirect: { path: "/targets", hash: "#retention" } },
+    { path: "/reconcile", redirect: "/compare" },
     { path: "/:pathMatch(.*)*", redirect: "/snapshot" }
   ]
 });

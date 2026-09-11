@@ -300,7 +300,7 @@ const GPU_STORAGE_KEY = "onmyoji-yuhun-performance-gpu-v1";
 const RESOURCE_PROFILE_STORAGE_KEY = "onmyoji-yuhun-calculation-resource-profile-v1";
 const CUSTOM_WORKER_COUNT_STORAGE_KEY = "onmyoji-yuhun-calculation-worker-count-v1";
 const SCHEDULER_DEBUG_STORAGE_KEY = "onmyoji-yuhun-calculation-scheduler-debug-v1";
-const MAX_RECORDS = 50;
+const MAX_RECORDS = 20;
 const BENCHMARK_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 function storage(): Storage | null {
@@ -410,7 +410,11 @@ export function loadPerformanceHistory(): PerformanceRecord[] {
   try {
     const parsed: unknown = JSON.parse(local.getItem(STORAGE_KEY) ?? "[]");
     if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((value) => normalizeRecord(value)).slice(0, MAX_RECORDS);
+    const records = parsed.flatMap((value) => normalizeRecord(value)).slice(0, MAX_RECORDS);
+    if (parsed.length > MAX_RECORDS) {
+      try { local.setItem(STORAGE_KEY, JSON.stringify(records)); } catch { /* best effort */ }
+    }
+    return records;
   } catch {
     return [];
   }

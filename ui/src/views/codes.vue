@@ -1,26 +1,38 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Ban, Check, Clipboard, Download, Play, ShieldCheck, Eye, X, LoaderCircle, Search } from "@lucide/vue";
+import { Clipboard, Download, Play, Save, ShieldCheck, Eye, X, LoaderCircle, Search } from "@lucide/vue";
 import { STAT_LABELS, type PlanSummaryDTO, type InventoryRowDTO, type PageDTO, type StatId } from "../../../src/browser.js";
 import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunImage, yuhunDisplayName } from "../manual-target-config.js";
-import EChart from "../components/EChart.vue";
 import { useWorkbenchStore } from "../store.js";
 
 const store = useWorkbenchStore();
+const saveOpen = ref(false);
+const saveName = ref("");
+const saveError = ref("");
+const saving = ref(false);
+function openSave(): void {
+  saveName.value = `方案 ${new Date().toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}`;
+  saveError.value = "";
+  saveOpen.value = true;
+}
+async function savePlan(): Promise<void> {
+  saving.value = true;
+  saveError.value = "";
+  try {
+    await store.saveCurrentPlan(saveName.value);
+    saveOpen.value = false;
+    store.notice = "方案已保存";
+  } catch (reason) {
+    saveError.value = reason instanceof Error ? reason.message : "保存失败";
+  } finally { saving.value = false; }
+}
 const targetShortfall = computed(() => Math.max(0, (store.plan?.requiredRelease ?? 0) - (store.plan?.finalNewDiscardCount ?? 0)));
 function updateDesiredFreeSlots(event: Event): void {
   const input = event.target as HTMLInputElement;
   store.setDesiredFreeSlots(input.value === "" ? 500 : Number(input.value));
   input.value = String(store.desiredFreeSlots);
 }
-const funnelOption = computed(() => ({
-  tooltip: { trigger: "axis" },
-  grid: { left: 90, right: 34, top: 10, bottom: 25 },
-  xAxis: { type: "value", splitLine: { lineStyle: { color: "#e3e6e8" } } },
-  yAxis: { type: "category", inverse: true, data: ["正常池", "D 新弃置", "E 捡回", "最终新弃置"] },
-  series: [{ type: "bar", data: [store.plan?.normalPoolCount ?? 0, store.plan?.newDiscardCount ?? 0, store.plan?.rescuedFromNewDiscardCount ?? 0, store.plan?.finalNewDiscardCount ?? 0], barWidth: 24, itemStyle: { color: (params: { dataIndex: number }) => ["#768086", "#a43c34", "#315c60", "#202426"][params.dataIndex], borderRadius: [0, 3, 3, 0] }, label: { show: true, position: "right" } }]
-}));
 const codePools = computed(() => ([
   { kind: "discard" as const, code: "D", title: "弃置码", pool: "正常池", count: store.plan?.discardGroupCount ?? 0, value: store.plan?.discardCode, groups: store.plan?.groups.filter(group => group.code === "D") ?? [] },
   { kind: "rescue" as const, code: "E", title: "捡回码", pool: "弃置池", count: store.plan?.rescueGroupCount ?? 0, value: store.plan?.rescueCode, groups: store.plan?.groups.filter(group => group.code === "E" && group.pool === "combined") ?? [] }
@@ -70,11 +82,10 @@ function statValue(stat: StatId, value: number): string {
   const percentage = percentageStats.has(stat);
   return `+${Number((value * (percentage ? 100 : 1)).toFixed(2))}${percentage ? "%" : ""}`;
 }
-const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targetsAndThresholdsValid:"单件决策已生成",staticPolicyConfirmed:"按当前决策生成",headerSourceValid:"分享码标识有效",groupLimitValid:"每码不超过 60 组",roundtripValid:"编码往返一致",previewComplete:"当前库存预演完成",retainedItemsProtected:"未误弃保留项" };
 </script>
 
 <template>
-  <section class="page-heading"><div><span class="eyebrow">04 / CODES</span><h1>双码、预演与验证</h1></div><span class="tag" :class="store.copyAllowed ? 'success-tag' : 'danger-tag'"><ShieldCheck :size="14" />{{ store.copyAllowed ? '复制门禁通过' : '复制已阻塞' }}</span></section>
+  <section class="page-heading"><div><span class="eyebrow">04 / CODES</span><h1>双码与预演</h1></div><span class="tag" :class="store.copyAllowed ? 'success-tag' : 'danger-tag'"><ShieldCheck :size="14" />{{ store.copyAllowed ? '复制门禁通过' : '复制已阻塞' }}</span></section>
 
   <div class="code-generation-actions">
     <div v-if="store.analysis" class="capacity-target">
@@ -84,7 +95,10 @@ const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targets
       <span id="capacity-target-help">清理后希望保留的总空位；本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件。上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}（严格小于标记数的最大整百数）。</span>
       <span v-if="store.desiredFreeSlotsMaximum === 0">标记不超过 100 件，整百目标为 0；若背包已超容，仍会尝试清理超出部分。</span>
     </div>
-    <button class="primary" :disabled="!store.analysis || !!store.busy" @click="store.generatePlan"><LoaderCircle v-if="store.busy === '正在生成并预演 D/E'" class="spin" :size="17" /><Play v-else :size="17" />{{ store.busy === '正在生成并预演 D/E' ? '正在生成…' : store.plan ? '重新生成并预演' : '生成并预演' }}</button>
+    <div class="code-generation-buttons">
+      <button v-if="store.plan" class="secondary" :disabled="!store.copyAllowed || !!store.busy || store.planLibraryBusy" @click="openSave"><Save :size="17" />保存方案</button>
+      <button class="primary" :disabled="!store.analysis || !!store.busy || saving" @click="store.generatePlan"><LoaderCircle v-if="store.busy === '正在生成并预演 D/E'" class="spin" :size="17" /><Play v-else :size="17" />{{ store.busy === '正在生成并预演 D/E' ? '正在生成…' : store.plan ? '重新生成并预演' : '生成并预演' }}</button>
+    </div>
   </div>
 
   <template v-if="store.plan">
@@ -125,11 +139,15 @@ const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targets
         </div>
       </article>
     </div>
-    <div class="split-layout chart-band"><div class="panel-block"><div class="block-title"><h2>账号池漏斗</h2><span>D \ E</span></div><EChart :option="funnelOption" :height="250" /><div v-if="store.plan.incidentalRestoreCount > 0" class="inline-warning">历史弃置池额外命中 {{ store.plan.incidentalRestoreCount }} 件</div></div><div class="panel-block"><div class="block-title"><h2>严格门禁</h2><span>{{ Object.values(store.gateState).filter(Boolean).length }} / 8</span></div><div class="gate-list"><div v-for="(label,key) in gateLabels" :key="key" :class="{ passed: store.gateState[key] }"><Check v-if="store.gateState[key]" :size="16" /><Ban v-else :size="16" /><span>{{ label }}</span></div></div></div></div>
-    <section class="simulation-band"><div><h2>当前库存覆盖验证</h2><span>生成时自动检查 D−E：不误弃保留项，仅清理正常池未锁定的六星 +0 御魂。无法区分的御魂一并保留，组数限制可能导致少清理；更换快照或修改决策后需重新生成。</span></div><span class="tag success-tag" v-if="store.gateState.retainedItemsProtected">验证通过</span></section>
-    <p class="code-operation-note">执行顺序：正常池用 D 标记弃置，再到弃置池用配套 E 筛选并恢复；E 是捡回步骤，无需强化御魂。没有 E 时只执行 D。当前页面生成一组方案；后续轮次须基于更新后的库存重新生成，不能直接套用上一轮 E。</p>
   </template>
   <div v-else class="empty-state"><ShieldCheck :size="32" /><strong>尚未生成双码</strong><span>完成账号分析后，即可生成并预演。</span></div>
+  <div v-if="saveOpen" class="modal-backdrop" @click.self="!saving && (saveOpen = false)" @keydown.esc="!saving && (saveOpen = false)">
+    <form class="import-dialog save-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="save-plan-title" @submit.prevent="savePlan">
+      <header><h2 id="save-plan-title">保存方案</h2><button type="button" class="icon-button" aria-label="关闭" :disabled="saving" @click="saveOpen = false"><X :size="18" /></button></header>
+      <div class="rule-form"><label class="rule-name"><span>方案名称</span><input v-model="saveName" maxlength="80" required :disabled="saving" /></label><p v-if="saveError" class="inline-warning" role="alert">{{ saveError }}</p></div>
+      <footer><button type="button" :disabled="saving" @click="saveOpen = false">取消</button><button class="primary" type="submit" :disabled="saving || !saveName.trim()"><Save :size="16" />{{ saving ? '正在保存…' : '保存' }}</button></footer>
+    </form>
+  </div>
   <div v-if="viewedRule" class="modal-backdrop" @click.self="viewedRule = null" @keydown.esc="viewedRule = null">
     <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-rule-title">
       <header><div><span class="eyebrow">PRESET RULE / {{ viewedRule.code }}</span><h2 id="preview-rule-title">查看{{ viewedRule.code === 'D' ? '弃置' : '捡回' }}规则</h2></div><button class="icon-button" title="关闭" @click="viewedRule = null"><X :size="18" /></button></header>
@@ -159,14 +177,14 @@ const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targets
 
 <style scoped>
 .code-generation-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
-.code-generation-actions > button { margin-left: auto; }
+.code-generation-buttons { display: flex; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.save-plan-dialog { width: min(460px, 100%); }
 .capacity-target { display: grid; gap: 7px; flex: 1; min-width: 240px; }
 .capacity-target label { display: flex; align-items: center; gap: 12px; font-weight: 600; }
 .capacity-target input { width: 110px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
-.capacity-target > span, .capacity-target-result > span, .code-operation-note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.capacity-target > span, .capacity-target-result > span { font-size: 12px; color: var(--muted); line-height: 1.6; }
 .capacity-target-result { display: grid; gap: 5px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; }
 .capacity-target-result.target-unmet { border-left-color: var(--red); }
-.code-operation-note { margin-top: 14px; }
 .generated-code-pools { margin-bottom: 18px; align-items: start; }
 .generated-code-value { display: grid; gap: 6px; padding: 12px 13px; border-bottom: 1px solid var(--line); }
 .generated-code-value label { font-size: 10px; color: var(--muted); }

@@ -137,10 +137,9 @@ const catalogLoading = ref(false);
 const expandedDomainIds = ref<string[]>([TARGET_CATALOG[0]!.id]);
 const activeCategoryId = ref<string | null>(null);
 const scenePopoverStyle = ref<Record<string, string>>({});
-const initialSceneId = "scene-87";
-const selectedSceneIds = ref<string[]>([initialSceneId]);
+const selectedSceneIds = ref<string[]>(catalog.value.flatMap(domain => domain.categories.flatMap(category => category.scenes.map(scene => scene.id))));
 const focusedSceneId = ref(selectedSceneIds.value[0]!);
-const teamSelectionMode = ref<"manual" | "smart">("manual");
+const teamSelectionMode = ref<"manual" | "smart">("smart");
 const smartDifficultyDecreaseCount = ref<"auto" | number>("auto");
 const smartHelpOpen = ref(false);
 const teamCalculationFilter = ref<"all" | "enabled" | "disabled" | "completed" | "running" | "pending" | "error">("all");
@@ -200,9 +199,13 @@ watch(() => store.restoreCompleted, (completed) => {
   if (completed) void initializeCatalogAfterRestore();
 }, { immediate: true });
 
-watch([catalog, selectedSceneIds, focusedSceneId], () => {
-  if (viewStateReady) store.setTargetViewState(localCatalogOverlay(catalog.value), selectedSceneIds.value, focusedSceneId.value, catalog.value);
+watch([catalog, selectedSceneIds, focusedSceneId, teamSelectionMode, smartDifficultyDecreaseCount], () => {
+  if (viewStateReady) persistTargetView();
 }, { deep: true });
+
+function persistTargetView(): void {
+  store.setTargetViewState(localCatalogOverlay(catalog.value), selectedSceneIds.value, focusedSceneId.value, catalog.value, teamSelectionMode.value, smartDifficultyDecreaseCount.value);
+}
 
 watch(() => store.sceneDataImportRevision, (revision) => {
   if (revision === 0) return;
@@ -463,7 +466,7 @@ const activeTeamProgressLabel = computed(() => {
     ? `${targetLabel} · ${current}`
     : targetLabel || current;
 });
-const hasTeamCalculationRun = computed(() => Object.keys(store.teamCalculationProgress).length > 0);
+const hasTeamCalculationRun = computed(() => store.teamCalculations.length > 0 || Object.keys(store.teamCalculationProgress).length > 0);
 const allScenesSelected = computed(() => selectedSceneIds.value.length === scenePaths.value.length);
 const managerDomain = computed(() => catalog.value.find((domain) => domain.id === managerDomainId.value) ?? null);
 const managerCategory = computed(() => managerDomain.value?.categories.find((category) => category.id === managerCategoryId.value) ?? null);
@@ -533,11 +536,22 @@ function toggleSmartTeamSelection(): void {
 }
 
 function calculateVisibleTeamTargets(): void {
+  if (hasTeamCalculationRun.value && !window.confirm("重新计算会清空当前计算结果，并重新计算。已选择的关卡和阵容保持不变，是否继续？")) return;
   void store.calculateTeamTargets({
     mode: teamSelectionMode.value,
     sceneIds: selectedSceneIds.value,
     difficultyDecreaseCount: smartDifficultyDecreaseCount.value
   });
+}
+
+function resetTeamCalculationSelection(): void {
+  store.resetTeamCalculations();
+  selectAllScenes();
+  focusedSceneId.value = selectedSceneIds.value[0] ?? fallbackSceneId();
+  teamSelectionMode.value = "smart";
+  smartDifficultyDecreaseCount.value = "auto";
+  smartHelpOpen.value = false;
+  persistTargetView();
 }
 
 function toggleDomain(domainId: string): void {
@@ -604,23 +618,18 @@ async function initializeCatalogAfterRestore(): Promise<void> {
   if (import.meta.env.MODE !== "test") {
     store.loadPublishedTeamTargets(publishedTargets);
   }
+  const savedState = store.targetViewState;
   const restoredOptions = store.teamCalculationOptionsForResume();
-  if (restoredOptions.mode === "smart" || restoredOptions.mode === "manual") {
-    teamSelectionMode.value = restoredOptions.mode;
-  }
-  if (restoredOptions.difficultyDecreaseCount !== undefined) {
-    smartDifficultyDecreaseCount.value = restoredOptions.difficultyDecreaseCount;
-  }
-  if (restoredOptions.sceneIds !== undefined && restoredOptions.sceneIds.length > 0) {
+  teamSelectionMode.value = savedState?.teamSelectionMode ?? restoredOptions.mode ?? "smart";
+  smartDifficultyDecreaseCount.value = savedState?.smartDifficultyDecreaseCount ?? restoredOptions.difficultyDecreaseCount ?? "auto";
+  if (savedState === null && restoredOptions.sceneIds !== undefined) {
     const available = new Set(scenePaths.value.map((scene) => scene.sceneId));
     const restoredSceneIds = [...new Set(restoredOptions.sceneIds.map(canonicalSceneId))].filter((id) => available.has(id));
-    if (restoredSceneIds.length > 0) {
-      selectedSceneIds.value = restoredSceneIds;
-      focusedSceneId.value = restoredSceneIds[0] ?? focusedSceneId.value;
-    }
+    selectedSceneIds.value = restoredSceneIds;
+    focusedSceneId.value = restoredSceneIds[0] ?? focusedSceneId.value;
   }
   viewStateReady = true;
-  store.setTargetViewState(localCatalogOverlay(catalog.value), selectedSceneIds.value, focusedSceneId.value, catalog.value);
+  persistTargetView();
   void hydrateTeamTargetInspections();
 }
 
@@ -653,7 +662,7 @@ async function loadPublishedCatalog(savedState: typeof store.targetViewState): P
         store.moveTeamTarget(target.id, migratedId, migratedScene.sceneLabel);
       }
     }
-    const migratedSelectedIds = (savedState?.selectedSceneIds ?? store.teamTargets.map((target) => target.sceneId))
+    const migratedSelectedIds = (savedState?.selectedSceneIds ?? [...availableIds])
       .map(canonicalSceneId)
       .filter((id, index, values) => availableIds.has(id) && values.indexOf(id) === index);
     selectedSceneIds.value = migratedSelectedIds;
@@ -2088,8 +2097,8 @@ function ruleSummary(rule: PresetRule): string {
       <div class="team-calculation-toolbar-actions">
         <button v-if="store.busy === '正在计算阵容御魂搭配'" class="secondary" data-testid="pause-team-targets" @click="store.pauseTeamCalculation"><Pause :size="15" />暂停计算</button>
         <button v-else-if="store.teamCalculationPaused" class="primary" data-testid="resume-team-targets" :disabled="!store.snapshot" @click="store.resumeTeamCalculation"><Play :size="15" />继续计算</button>
-        <button v-else class="primary" data-testid="calculate-team-targets" :disabled="!!store.busy || (teamSelectionMode !== 'smart' && selectedEnabledTeamTargetCount === 0) || (teamSelectionMode === 'smart' && store.teamTargets.length === 0) || !store.snapshot" @click="calculateVisibleTeamTargets"><Calculator :size="16" />计算已启动阵容</button>
-        <button class="secondary" data-testid="reset-team-targets" :disabled="store.teamCalculations.length === 0 && Object.keys(store.teamCalculationProgress).length === 0 && !store.teamCalculationPaused" @click="store.resetTeamCalculations"><RotateCcw :size="15" />重置计算</button>
+        <button v-else class="primary" data-testid="calculate-team-targets" :disabled="catalogLoading || !!store.busy || selectedSceneIds.length === 0 || (teamSelectionMode !== 'smart' && selectedEnabledTeamTargetCount === 0) || (teamSelectionMode === 'smart' && store.teamTargets.length === 0) || !store.snapshot" @click="calculateVisibleTeamTargets"><Calculator :size="16" />{{ hasTeamCalculationRun ? '重新计算' : '计算已启用阵容' }}</button>
+        <button class="secondary" data-testid="reset-team-targets" :disabled="catalogLoading || (!hasTeamCalculationRun && !store.teamCalculationPaused && allScenesSelected && teamSelectionMode === 'smart' && smartDifficultyDecreaseCount === 'auto')" @click="resetTeamCalculationSelection"><RotateCcw :size="15" />重置计算</button>
       </div>
     </div>
 

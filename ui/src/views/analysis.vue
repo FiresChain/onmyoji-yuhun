@@ -170,7 +170,7 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
   <section class="page-heading"><div><span class="eyebrow">03 / ANALYSIS</span><h1>分析结果</h1></div><div class="analysis-actions"><label class="default-disposition">默认御魂处理<select :value="store.defaultDisposition" @change="store.setDefaultDisposition(($event.target as HTMLSelectElement).value as 'retain' | 'discard')"><option value="retain">保留</option><option value="discard">弃置</option></select></label><button class="primary" :disabled="!store.snapshot || !!store.busy" @click="store.runAnalysis"><RefreshCw v-if="store.analysis" :size="17" /><Play v-else :size="17" />{{ store.analysis ? '重新分析' : '运行分析' }}</button></div></section>
 
   <div v-if="store.enabledTeamTargets.length > 0 || actualTeamCalculationCount > 0" class="inline-warning team-calculation-pending">
-    <template v-if="actualTeamCalculationCount > 0">已保存 {{ actualTeamCalculationCount }} 条完成阵容、{{ actualTeamMetricCount }} 个已计算式神指标；本次分析只读取这些搭配，不会重新计算或修改阵容结果。</template>
+    <template v-if="actualTeamCalculationCount > 0">已保存 {{ actualTeamCalculationCount }} 条完成阵容、{{ actualTeamMetricCount }} 个已计算式神指标。</template>
     <template v-else>当前没有完成的阵容计算结果；本次分析不会判断御魂是否可能提升阵容。</template>
   </div>
   <div v-if="store.enabledPresetRules.length > 0" class="inline-warning team-calculation-pending">已启用 {{ store.enabledPresetRules.length }} 条预置方案规则；命中规则会直接写入单件御魂原因。</div>

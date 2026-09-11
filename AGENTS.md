@@ -1,8 +1,8 @@
 # Onmyoji Yuhun UI Map
 
 `ui/` is a Vue 3 / Pinia workbench for analysing a player's yuhun snapshot,
-configuring team targets, generating game filter codes, and reconciling their
-in-game results. The application entry is `ui/src/main.ts`; route definitions
+configuring team targets, generating game filter codes, and comparing saved
+plans. The application entry is `ui/src/main.ts`; route definitions
 live in `ui/src/router.ts`; state, persistence, worker calls, and UI commands
 live in `ui/src/store.ts`.
 
@@ -13,30 +13,49 @@ The left navigation is an ordered workflow, rendered by `ui/src/App.vue`:
 1. `#/snapshot` - Data snapshot
 2. `#/targets` - Targets and strategies
 3. `#/analysis` - Analysis results
-4. `#/codes` - Dual codes, preview, and validation
-5. `#/reconcile` - In-game reconciliation
+4. `#/codes` - Dual codes and preview
+5. `#/compare` - Plan comparison and management
 
 `/targets` and `/analysis` redirect to `/snapshot` when no snapshot has been
 loaded. `/codes` redirects to `/analysis` until analysis or a generated plan
 exists. `/policy` is a legacy redirect to `#/targets#retention`; it does not
 currently render a separate policy editor.
+`/reconcile` redirects to `/compare`; the old reconciliation view is removed.
+Comparison requires a snapshot, but the plan library can be managed without one.
 
 ## Shared Shell and Global UI
 
 `ui/src/App.vue` provides the following UI outside individual routes:
 
-- The top bar shows local-session status and imported-item count. Its commands
-  restore or save the local project summary, import/export scene data, export a
-  project JSON, export a private mobile handoff, open diagnostics, and clear
-  the in-memory plus local session.
+- The top bar shows the product name and imported-item count. Its commands
+  import/export scene data, open Settings, and clear the in-memory plus local
+  session after confirmation. Session saving/restoration remains automatic;
+  project-summary and private-handoff controls are not shown in the top bar.
 - Errors and notices from the store are displayed globally and can be closed.
-- The diagnostics dialog has three sections:
-  - **Device:** browser/device capabilities, a CPU/memory/WebGPU benchmark, and
-    the anonymous-collection consent toggle.
-  - **Performance records:** locally kept timing, workload, algorithm,
-    environment, benchmark, comparison, and per-target details. Records can
-    be exported or cleared.
-  - **Error information:** formatted reports for unsupported team calculations.
+- The bell immediately before Settings opens the notification center and shows
+  unread release counts. `ui/src/notifications.ts` owns the newest-first release
+  list; add a new stable `version` and its changes for each notification release.
+  Read versions and onboarding progress persist independently in localStorage.
+- First visits show the test warning, then the data-sharing confirmation.
+  The warning requires five seconds of visible reading; hidden tabs pause the
+  timer, and backdrop/Escape cannot bypass either required confirmation. The
+  background is inert and modal focus stays inside the notification dialog.
+  Sharing defaults to checked only when no prior preference exists; changing a
+  draft does not grant consent until Confirm. Existing opt-outs are preserved.
+  Completing onboarding establishes the current release as the initial baseline.
+  Returning visitors see unread release notes once, and the bell retains access
+  to read releases and the test warning. Session clearing preserves these flags.
+- Settings has four sections:
+  - **Device:** browser/device capabilities and a CPU/memory/WebGPU benchmark.
+  - **Performance records:** the latest 20 timing, workload, algorithm,
+    environment, benchmark, comparison, and per-target records. Older local
+    histories are trimmed on load. Import/export/clear controls are hidden.
+  - **Data collection:** independent local consent switches for team targets
+    and performance metrics. Each inherits legacy consent until changed.
+  - **ID settings:** decode a pasted game yuhun code and persist its 16-byte
+    user ID in localStorage. Only the ID is saved; changing it invalidates the
+    generated plan while preserving analysis. Encoding sends this ID via the
+    existing API and verifies it in the response and codec round trip.
 
 Local session/project exports are account-derived private files and must not be
 committed. The snapshot itself is processed in the browser. Remote requests are
@@ -72,7 +91,9 @@ This is the main configuration surface.
   merges local custom catalog nodes and scene overrides.
 - The left tree expands gameplay domains and categories, selects all/some/none
   scenes at each level, exposes a scene picker, imports lineups, and opens the
-  catalog manager.
+  catalog manager. A fresh view selects every scene and uses smart calculation
+  with automatic difficulty fallback. Scene selection (including none), mode,
+  and difficulty preferences persist across navigation and session restore.
 - The result pane groups imported targets by scene. It supports per-target and
   bulk enablement, filtering by enablement/calculation state, per-scene yuhun
   mutual exclusion, and target preview/detail/delete actions.
@@ -83,8 +104,11 @@ This is the main configuration surface.
   per-target progress, and the original manual/smart options are retained in
   the private browser session. After a refresh or browser restart, an
   interrupted run restores as paused and continues only uncompleted targets.
-  The toolbar reset stops the active calculation and clears calculation-derived
-  results without changing the snapshot, targets, or strategies. Loading
+  Recalculation requires confirmation before clearing calculation-derived
+  results and keeps the selected scenes and targets. The toolbar reset stops
+  the active calculation, clears its results, and restores all scenes, smart
+  mode, and automatic difficulty fallback. It retains the snapshot, targets,
+  and strategies. Loading
   published targets must merge with this local state rather than invalidate it.
 - Expanded calculation results show each configured shikigami's selected suit,
   score, target-score pass/fail state, panel attributes, pieces, and failure
@@ -153,6 +177,8 @@ This is the main configuration surface.
 
 ### 3. Analysis Results (`ui/src/views/analysis.vue`)
 
+- Default yuhun disposition is discard for fresh sessions; an explicitly saved
+  preference is restored.
 - Chooses the conservative or normal risk tier and runs/re-runs full analysis.
   Enabled team targets and preset rules are surfaced before execution.
 - Shows current six-star capacity, capacity limit/free or overflow count, and
@@ -164,7 +190,7 @@ This is the main configuration surface.
   strategy tags such as candidate combination, embryo comparison, or
   enhancement upper bound.
 
-### 4. Dual Codes, Preview, and Validation (`ui/src/views/codes.vue`)
+### 4. Dual Codes and Preview (`ui/src/views/codes.vue`)
 
 - The desired free-slot input means final inventory free slots, defaults to 500,
   and is capped at the greatest nonnegative multiple of 100 strictly below the
@@ -179,13 +205,17 @@ This is the main configuration surface.
   a multi-round execution UI. E is used to restore items from the discard pool,
   not to spend enhancement resources.
 - Generates and previews the D discard and E rescue codes directly after
-  analysis, without a Header-source field. The encode API resolves its default
-  ID; the frontend sends only plan kind and groups. Local matching uses an
+  analysis. The frontend sends the ID saved in Settings to the encode API;
+  without a saved ID, the API resolves its default. Local matching uses an
   internal placeholder Header that is never sent to the encoder. Round-trip
-  validation checks the actual service-selected ID and all generated criteria.
+  validation checks the saved/service-selected ID and all generated criteria.
 - Download actions export the exact code as a PNG QR image with a quiet zone.
   Generation stays local and export still requires the copy gates. A code too
   large for one QR image reports an error and remains available for copying.
+- After generation, Save Plan appears immediately before the generation button.
+  It saves a named, immutable D/E pair and the verified decoded criteria to the
+  private plan library. Renaming changes only the name. Pure D and empty
+  generated plans are supported.
 - Shows cleanup/capacity comparison metrics and side-by-side D discard / E
   rescue panels styled like the target rule pools (stacked on mobile). Each
   panel contains its code and rule rows with compact icon buttons for View rule
@@ -200,35 +230,47 @@ This is the main configuration surface.
   waits for the local save; changing inputs still invalidates the saved plan.
   Startup and route guards share the pending restoration so refresh stays on
   the requested page instead of redirecting before data is ready.
-- Shows an account-pool funnel and warnings about unexpected historical
-  discard-pool restores.
+- The code page omits the account-pool funnel, detailed gate checklist,
+  inventory coverage panel, and execution-order paragraph. Validation remains
+  part of generation and copy/export eligibility.
 - Copying/downloading codes and exporting the mobile handoff remain disabled
   until every strict gate passes: valid snapshot/targets/policy/header, group
   limit, lossless codec round trip, account preview, Tier 0 proof, and selected
   risk-tier simulation.
-- Runs or cancels a fixed-size 100,000-item validation simulation and displays
-  its progress and coverage summary.
 
-### 5. In-game Reconciliation (`ui/src/views/reconcile.vue`)
+### 5. Plan Comparison (`ui/src/views/compare.vue`)
 
-- Starts by importing the private mobile handoff that contains only D/E codes,
-  aggregate results, and the reconciliation checklist; it does not restore the
-  desktop snapshot/session.
-- Lists each generated rule group's expected count and accepts the actual game
-  count. Delta and per-row status update immediately.
-- Marks the run complete only when every expected/actual pair matches and can
-  export the checklist as CSV.
+- Manages named plans: save from Codes, import a D/E pair or exported JSON,
+  inspect codes, rename, export, and delete after confirmation. Imports decode
+  the codes through the existing API, validate kind/warnings and matching D/E
+  IDs, and derive criteria from the decoded result, never from imported JSON.
+- Plans live in the `plans` object store of IndexedDB version 3, independently
+  of the current session/snapshot. Generation, snapshot replacement, and session
+  clearing preserve the library; deletion is an explicit library action.
+- Select a base and a new plan, or swap them. Both pairs execute independently
+  on the current snapshot in the Worker using the maintained D-then-E matcher.
+  Compare final pool disposition, including historical discard restores and
+  locked items. The four exclusive categories are extra discard, extra retain,
+  both discard, and both retain. The initial view shows only changed items.
+- Counts cover the whole snapshot. The paginated inventory table shows before
+  and after disposition, original pool/lock state, and main/sub/intrinsic stats.
+  Filter by change category, suit search, or the shared inventory filter editor.
+  Comparison requires no analysis and does not alter generated plans or gates.
+  Results are cached by the ordered rule pair and inventory, and invalidated on
+  snapshot replacement/reset. Stale asynchronous UI responses are ignored.
 
 ## Reusable Presentation Components
 
 - `ui/src/components/EChart.vue` renders responsive canvas ECharts and disposes
-  its chart/resize observer on unmount. It is used for the snapshot distribution
-  and plan funnel.
+  its chart/resize observer on unmount. It is used for snapshot distributions.
 - `ui/src/components/ExcelColumnFilter.vue` is the analysis-table filter menu:
   searchable multi-select options with select-all, clear, and apply actions.
 
 ## UI Maintenance Boundaries
 
+- Keep product copy concise: titles, control labels, and brief result/error
+  messages. Do not add tutorial paragraphs, implementation explanations, or
+  unsolicited storage/privacy notices. Add descriptive copy only when requested.
 - Preserve the ordered workflow and route guards when introducing a new view.
   Add the route to `STEPS` in `ui/src/router.ts`, and keep prerequisite state
   explicit.

@@ -1,44 +1,36 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
-import { Activity, AlertTriangle, Cpu, Database, DatabaseBackup, Download, FolderOpen, Gauge, LockKeyhole, Save, Settings2, ShieldCheck, Smartphone, Trash2, Upload, X } from "@lucide/vue";
+import { Activity, Bell, Cpu, Database, DatabaseBackup, Gauge, KeyRound, Settings2, ShieldCheck, Trash2, Upload, X } from "@lucide/vue";
 import { STEPS } from "./router.js";
 import { useWorkbenchStore } from "./store.js";
 import {
   CALCULATION_RESOURCE_PROFILES,
   capturePerformanceDevice,
   loadPerformanceBenchmark,
-  parseDiagnosticsExport,
   type CalculationResourceProfile,
-  type DiagnosticsExport,
-  type ImportedDiagnostics,
   type PerformanceBenchmark,
   type PerformanceRecord,
   type PerformanceTargetTiming
 } from "./performance.js";
 import { inspectPerformanceDevice, runPerformanceBenchmark } from "./hardware-benchmark.js";
-import { formatTeamCalculationError } from "./team-calculation-errors.js";
-import { shikigamiByHeroId } from "./manual-target-config.js";
 import { parseSceneDataExport } from "./persistence.js";
-import { setTelemetryConsent, telemetryApiUrl, telemetryConsent } from "./telemetry.js";
+import type { TelemetryKind } from "./telemetry.js";
+import NotificationCenter from "./components/NotificationCenter.vue";
 
 const route = useRoute();
 const store = useWorkbenchStore();
 const activeIndex = computed(() => STEPS.findIndex((step) => step.id === route.name));
 const performanceOpen = ref(false);
-const diagnosticsSection = ref<"device" | "performance" | "imported" | "errors">("device");
+const diagnosticsSection = ref<"device" | "performance" | "collection" | "id">("device");
 const deviceInfo = ref(capturePerformanceDevice());
 const benchmarkRunning = ref(false);
 const benchmark = ref<PerformanceBenchmark | null>(loadPerformanceBenchmark());
-const telemetryEnabled = ref(telemetryConsent());
+const telemetryEnabled = computed(() => store.dataSharing);
+const userIdCode = ref("");
+const userIdMessage = ref("");
+const userIdFailed = ref(false);
 const sceneDataInput = ref<HTMLInputElement | null>(null);
-const diagnosticsInput = ref<HTMLInputElement | null>(null);
-const importedDiagnostics = ref<ImportedDiagnostics | null>(null);
-const calculationErrors = computed(() => store.teamCalculations.filter((report) =>
-  report.entities.some((entity) => entity.status === "unsupported")
-));
-const resolveShikigamiName = (id: number | null, fallback: string): string => id === null ? fallback : shikigamiByHeroId(id)?.name ?? fallback;
-
 async function inspectDevice(): Promise<void> {
   deviceInfo.value = await inspectPerformanceDevice();
 }
@@ -59,9 +51,27 @@ function openPerformanceDialog(): void {
   performanceOpen.value = true;
 }
 
-function updateTelemetryConsent(enabled: boolean): void {
-  telemetryEnabled.value = enabled;
-  setTelemetryConsent(enabled);
+function updateTelemetryConsent(kind: TelemetryKind, enabled: boolean): void {
+  void run(() => store.setDataSharingConsent(kind, enabled));
+}
+
+async function importUserId(): Promise<void> {
+  userIdMessage.value = "";
+  userIdFailed.value = false;
+  try {
+    await store.importYuhunUserId(userIdCode.value);
+    userIdCode.value = "";
+    userIdMessage.value = "用户 ID 已保存";
+  } catch (error) {
+    userIdFailed.value = true;
+    userIdMessage.value = error instanceof Error ? error.message : "导入失败，请重试";
+  }
+}
+
+async function confirmClearSession(): Promise<void> {
+  if (window.confirm("确定清空内存和本机会话吗？导入的快照、关卡与阵容配置、计算结果和生成的方案都会清除，此操作无法撤销。")) {
+    await store.clearSession();
+  }
 }
 
 function updateTeamCalculationResourceProfile(value: string): void {
@@ -105,45 +115,6 @@ function formatCount(value: number | null): string {
 function formatRecordedAt(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function downloadJson(payload: unknown, filename: string): void {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportDiagnostics(): void {
-  const exportedAt = new Date();
-  const payload: DiagnosticsExport = {
-    schemaVersion: 1,
-    kind: "onmyoji-yuhun-diagnostics-export",
-    exportedAt: exportedAt.toISOString(),
-    benchmark: benchmark.value,
-    records: store.performanceHistory,
-    schedulerLog: store.teamCalculationSchedulerDebugLog
-  };
-  downloadJson(payload, `onmyoji-yuhun-diagnostics-${exportedAt.toISOString().slice(0, 10)}.json`);
-}
-
-async function importDiagnostics(files: FileList | null): Promise<void> {
-  const file = files?.[0];
-  if (diagnosticsInput.value !== null) diagnosticsInput.value.value = "";
-  if (file === undefined) return;
-  try {
-    const imported = parseDiagnosticsExport(JSON.parse(await file.text()) as unknown);
-    if (imported === null) {
-      window.alert("不是可识别的性能诊断文件");
-      return;
-    }
-    importedDiagnostics.value = imported;
-    diagnosticsSection.value = "imported";
-  } catch {
-    window.alert("不是可识别的性能诊断文件");
-  }
 }
 
 async function chooseSceneData(files: FileList | null): Promise<void> {
@@ -215,6 +186,7 @@ function comparisonLabel(index: number, entry: PerformanceRecord): string | null
 }
 
 onMounted(() => {
+  store.initializeNotifications();
   void run(store.restoreLocalSession);
   void inspectDevice();
 });
@@ -227,29 +199,24 @@ async function run(action: () => void | Promise<void>): Promise<void> {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :inert="store.notificationDialog !== null">
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark"><ShieldCheck :size="19" /></span>
         <div>
           <strong>御魂决策工作台</strong>
-          <span>{{ store.restoring ? '正在恢复本地会话' : '本机自动保存' }}</span>
         </div>
       </div>
       <div class="top-status">
-        <span class="privacy-indicator"><LockKeyhole :size="14" /> 无网络 · 内存优先</span>
         <span v-if="store.snapshot" class="snapshot-ref"><Database :size="14" /> {{ store.snapshot.total.toLocaleString() }} 件</span>
       </div>
       <div class="toolbar-actions">
-        <button class="icon-button" title="恢复本地项目设置" @click="run(store.loadLocal)"><FolderOpen :size="18" /></button>
-        <button class="icon-button" title="保存本地项目" :disabled="!store.snapshot" @click="run(store.saveLocal)"><Save :size="18" /></button>
         <button class="toolbar-command" title="导入全部关卡数据 JSON" :disabled="store.restoring" @click="sceneDataInput?.click()"><Upload :size="17" /><span>导入关卡</span></button>
         <button class="toolbar-command" title="导出全部关卡数据 JSON" :disabled="store.restoring" @click="run(store.exportSceneData)"><DatabaseBackup :size="17" /><span>导出关卡</span></button>
         <input ref="sceneDataInput" class="visually-hidden" type="file" accept="application/json,.json" @change="run(() => chooseSceneData(($event.target as HTMLInputElement).files))" />
-        <button class="icon-button" title="导出项目 JSON" :disabled="!store.snapshot" @click="run(store.exportProject)"><Download :size="18" /></button>
-        <button class="icon-button" title="导出手机私有交接包" :disabled="!store.copyAllowed" @click="run(store.exportHandoff)"><Smartphone :size="18" /></button>
-        <button class="icon-button" title="查看计算性能记录" @click="openPerformanceDialog"><Settings2 :size="18" /></button>
-        <button class="icon-button danger" title="清空内存和本机会话" @click="run(store.clearSession)"><Trash2 :size="18" /></button>
+        <button class="icon-button notification-button" title="通知" :aria-label="store.unreadNotifications.length ? `通知，${store.unreadNotifications.length} 条未读` : '通知'" @click="store.openNotifications"><Bell :size="18" /><span v-if="store.unreadNotifications.length" class="notification-badge">{{ store.unreadNotifications.length }}</span></button>
+        <button class="icon-button" title="设置" aria-label="设置" @click="openPerformanceDialog"><Settings2 :size="18" /></button>
+        <button class="icon-button danger" title="清空内存和本机会话" :disabled="store.restoring" @click="run(confirmClearSession)"><Trash2 :size="18" /></button>
       </div>
     </header>
 
@@ -283,30 +250,21 @@ async function run(action: () => void | Promise<void>): Promise<void> {
     <div v-if="performanceOpen" class="performance-layer" role="presentation" @click.self="performanceOpen = false">
       <section class="performance-dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="performance-title">
         <header>
-          <div><span class="eyebrow">LOCAL DIAGNOSTICS</span><h2 id="performance-title">计算性能记录</h2></div>
+          <div><span class="eyebrow">SETTINGS</span><h2 id="performance-title">设置</h2></div>
           <div class="performance-dialog-actions">
-            <button class="icon-button" title="导出性能诊断 JSON" :disabled="benchmark === null && store.performanceHistory.length === 0 && store.teamCalculationSchedulerDebugLog === null" @click="exportDiagnostics"><Download :size="16" /></button>
-            <button class="icon-button" title="导入性能诊断 JSON" @click="diagnosticsInput?.click()"><Upload :size="16" /></button>
-            <button class="icon-button" title="清空性能记录" :disabled="store.performanceHistory.length === 0" @click="store.clearPerformanceRecords"><Trash2 :size="16" /></button>
-            <button class="icon-button" title="清空调度调试日志" :disabled="store.teamCalculationSchedulerDebugLog === null" @click="store.clearTeamCalculationSchedulerDebugLog"><Trash2 :size="16" /></button>
             <button class="icon-button" title="关闭" @click="performanceOpen = false"><X :size="18" /></button>
-            <input ref="diagnosticsInput" class="visually-hidden" type="file" accept="application/json,.json" @change="importDiagnostics(($event.target as HTMLInputElement).files)" />
           </div>
         </header>
         <div class="diagnostics-layout">
-          <nav class="diagnostics-nav" aria-label="诊断设置">
+          <nav class="diagnostics-nav" aria-label="设置分类">
             <button :class="{ active: diagnosticsSection === 'device' }" @click="diagnosticsSection = 'device'"><Cpu :size="16" /><span>基础信息</span></button>
             <button :class="{ active: diagnosticsSection === 'performance' }" @click="diagnosticsSection = 'performance'"><Activity :size="16" /><span>计算性能记录</span><small>{{ store.performanceHistory.length }}</small></button>
-            <button v-if="importedDiagnostics !== null" :class="{ active: diagnosticsSection === 'imported' }" @click="diagnosticsSection = 'imported'"><Upload :size="16" /><span>导入诊断</span><small>{{ importedDiagnostics.records.length + (importedDiagnostics.schedulerLog === null ? 0 : 1) }}</small></button>
-            <button :class="{ active: diagnosticsSection === 'errors' }" @click="diagnosticsSection = 'errors'"><AlertTriangle :size="16" /><span>错误信息</span><small>{{ calculationErrors.length }}</small></button>
+            <button :class="{ active: diagnosticsSection === 'collection' }" @click="diagnosticsSection = 'collection'"><Database :size="16" /><span>数据收集</span></button>
+            <button :class="{ active: diagnosticsSection === 'id' }" @click="diagnosticsSection = 'id'"><KeyRound :size="16" /><span>ID 设置</span></button>
           </nav>
           <div class="performance-dialog-body diagnostics-content">
           <section v-if="diagnosticsSection === 'device'" class="diagnostics-section">
             <header><div><span class="eyebrow">DEVICE</span><h3>基础信息</h3></div><button class="primary" :disabled="benchmarkRunning" @click="run(runPerformanceTest)"><Gauge :size="15" />{{ benchmarkRunning ? '正在测试…' : '性能测试' }}</button></header>
-            <div class="telemetry-setting">
-              <div><strong>匿名数据收集</strong><span>仅上传性能聚合记录和你主动保存的自定义阵容，不上传快照、御魂 ID 或账号信息。</span><small>接口：{{ telemetryApiUrl() }}</small></div>
-              <label class="switch"><input type="checkbox" :checked="telemetryEnabled" @change="updateTelemetryConsent(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ telemetryEnabled ? '已允许' : '已关闭' }}</b></label>
-            </div>
             <dl class="device-information">
               <div><dt>系统平台</dt><dd>{{ deviceInfo.platform ?? '浏览器未提供' }}</dd></div>
               <div><dt>浏览器</dt><dd>{{ deviceInfo.browserName === null ? '浏览器未识别' : `${deviceInfo.browserName} ${deviceInfo.browserMajorVersion ?? ''}` }}</dd></div>
@@ -331,12 +289,12 @@ async function run(action: () => void | Promise<void>): Promise<void> {
             <p class="performance-notice">真实计算开始前会自动刷新超过 24 小时的画像；一次测试依次测量御魂搜索 1 至 N Worker 的吞吐曲线、内存与 WebGPU。阵容计算按所选档位从曲线中选择并发数，结果保存在本机并附加到之后的计算记录。</p>
           </section>
           <section v-else-if="diagnosticsSection === 'performance'" class="diagnostics-section">
+            <header><div><span class="eyebrow">PERFORMANCE</span><h3>计算性能记录</h3></div><span>最近 20 条</span></header>
             <div v-if="store.performanceHistory.length === 0" class="performance-empty">
               <Activity :size="20" />
               <span>完成一次阵容计算、完整分析或验证模拟后，这里会显示性能摘要。</span>
             </div>
             <template v-else>
-            <div class="performance-notice">仅保存在本机浏览器；当前未上传网络。记录不包含阵容码、御魂 ID 或原始快照。</div>
             <article v-for="(entry, index) in store.performanceHistory" :key="entry.id" class="performance-entry">
               <div class="performance-entry-head">
                 <div><strong>{{ operationLabels[entry.operation] }}</strong><span>{{ formatRecordedAt(entry.recordedAt) }}</span></div>
@@ -385,36 +343,47 @@ async function run(action: () => void | Promise<void>): Promise<void> {
             </article>
             </template>
           </section>
-          <section v-else-if="diagnosticsSection === 'imported' && importedDiagnostics !== null" class="diagnostics-section">
-            <div class="performance-notice">导入文件只读查看，不会恢复快照、项目设置或计算结果。</div>
-            <dl class="performance-metrics">
-              <div><dt>导出时间</dt><dd>{{ formatRecordedAt(importedDiagnostics.exportedAt) }}</dd></div>
-              <div><dt>来源</dt><dd>{{ importedDiagnostics.sourceKind === 'unified' ? '统一诊断包' : importedDiagnostics.sourceKind === 'performance' ? '旧性能记录' : '旧调度日志' }}</dd></div>
-              <div><dt>性能记录</dt><dd>{{ importedDiagnostics.records.length.toLocaleString() }}</dd></div>
-              <div><dt>调度事件</dt><dd>{{ importedDiagnostics.schedulerLog?.events.length.toLocaleString() ?? '-' }}</dd></div>
-            </dl>
-            <article v-for="entry in importedDiagnostics.records" :key="entry.id" class="performance-entry">
-              <div class="performance-entry-head"><div><strong>{{ operationLabels[entry.operation] }}</strong><span>{{ formatRecordedAt(entry.recordedAt) }}</span></div><b>{{ formatMs(entry.elapsedMs) }}</b></div>
-              <div class="performance-stages"><span v-for="stage in entry.stages" :key="stage.name">{{ stage.name }} <b>{{ formatMs(stage.elapsedMs) }}</b></span></div>
-              <div v-if="entry.analysisDiagnostics" class="performance-comparison">分析：+0 样本 {{ entry.analysisDiagnostics.level0SampleCount.toLocaleString() }} · 潜力证据 {{ entry.analysisDiagnostics.potentialEvidenceCount.toLocaleString() }} · 背包转移 {{ entry.analysisDiagnostics.tier1TransitionCount.toLocaleString() }}</div>
-            </article>
-            <article v-if="importedDiagnostics.schedulerLog" class="performance-entry">
-              <div class="performance-entry-head"><div><strong>阵容调度</strong><span>{{ formatRecordedAt(importedDiagnostics.schedulerLog.recordedAt) }}</span></div><b>{{ importedDiagnostics.schedulerLog.events.length.toLocaleString() }} 事件</b></div>
-              <div class="performance-comparison">{{ importedDiagnostics.schedulerLog.resourceProfile }} · {{ importedDiagnostics.schedulerLog.requestedWorkerCount }} Worker · {{ importedDiagnostics.schedulerLog.requestCount }} 请求 · 丢弃 {{ importedDiagnostics.schedulerLog.droppedEventCount }} 事件</div>
-            </article>
+          <section v-else-if="diagnosticsSection === 'collection'" class="diagnostics-section">
+            <header><div><span class="eyebrow">DATA COLLECTION</span><h3>数据收集</h3></div></header>
+            <div class="telemetry-setting">
+              <div><strong>阵容数据</strong><span>导入自定义阵容码时，上传阵容码、名称、所属关卡、难度和指标数量，用于完善阵容库。</span></div>
+              <label class="switch"><input type="checkbox" aria-label="阵容数据" :checked="telemetryEnabled['team-target']" @change="updateTelemetryConsent('team-target', ($event.target as HTMLInputElement).checked)" /><span></span><b>{{ telemetryEnabled['team-target'] ? '已开启' : '已关闭' }}</b></label>
+            </div>
+            <div class="telemetry-setting">
+              <div><strong>性能指标</strong><span>计算完成后，上传耗时、计算规模、算法版本与设备性能摘要，用于优化计算速度和资源分配。</span></div>
+              <label class="switch"><input type="checkbox" aria-label="性能指标" :checked="telemetryEnabled.performance" @change="updateTelemetryConsent('performance', ($event.target as HTMLInputElement).checked)" /><span></span><b>{{ telemetryEnabled.performance ? '已开启' : '已关闭' }}</b></label>
+            </div>
           </section>
-          <section v-else class="diagnostics-section">
-            <div v-if="calculationErrors.length === 0" class="performance-empty"><AlertTriangle :size="20" /><span>当前没有阵容计算错误。</span></div>
-            <template v-else>
-              <article v-for="report in calculationErrors" :key="report.id" class="diagnostics-error-entry">
-                <strong>{{ report.label }}</strong>
-                <pre>{{ formatTeamCalculationError(report, resolveShikigamiName) }}</pre>
-              </article>
-            </template>
+          <section v-else-if="diagnosticsSection === 'id'" class="diagnostics-section">
+            <header><div><span class="eyebrow">USER ID</span><h3>ID 设置</h3></div></header>
+            <div class="user-id-current"><strong>当前用户 ID</strong><code>{{ store.yuhunUserId ?? '未设置' }}</code></div>
+            <form class="user-id-form" @submit.prevent="importUserId">
+              <label for="user-id-code">御魂码</label>
+              <textarea id="user-id-code" v-model="userIdCode" rows="5" placeholder="粘贴游戏中导出的御魂码" :disabled="store.busy !== null || store.restoring" spellcheck="false"></textarea>
+              <button class="primary" type="submit" :disabled="!userIdCode.trim() || store.busy !== null || store.restoring"><Upload :size="16" />{{ store.busy === '正在识别御魂码 ID' ? '正在识别…' : '识别并保存 ID' }}</button>
+            </form>
+            <p v-if="userIdMessage" class="user-id-message" :class="{ failed: userIdFailed }" role="status">{{ userIdMessage }}</p>
           </section>
           </div>
         </div>
       </section>
     </div>
   </div>
+  <NotificationCenter />
 </template>
+
+<style scoped>
+.notification-button { position: relative; }
+.notification-badge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 3px; display: grid; place-items: center; background: var(--red); color: white; border-radius: 8px; font-size: 9px; line-height: 1; }
+.user-id-current { display: grid; gap: 8px; margin-bottom: 20px; padding: 14px; background: var(--green-soft); border: 1px solid var(--line); }
+.user-id-current code { overflow-wrap: anywhere; }
+.user-id-form { display: grid; gap: 10px; }
+.user-id-form label { font-weight: 600; }
+.user-id-form textarea { width: 100%; resize: vertical; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
+.user-id-form button { justify-self: start; }
+.user-id-message { margin: 14px 0; color: var(--green); }
+.user-id-message.failed { color: var(--red); }
+.telemetry-setting .switch { position: relative; }
+.telemetry-setting .switch input { display: block; position: absolute; width: 1px; height: 1px; opacity: 0; }
+.telemetry-setting .switch input:focus-visible + span { outline: 2px solid var(--green); outline-offset: 3px; }
+</style>

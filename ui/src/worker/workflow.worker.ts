@@ -10,6 +10,7 @@ type Method =
   | "importSnapshot"
   | "analyze"
   | "queryInventory"
+  | "comparePlans"
   | "queryYuhunDetails"
   | "queryDecisions"
   | "queryYuhunDecisions"
@@ -74,6 +75,8 @@ async function dispatch(message: RequestMessage): Promise<unknown> {
       return workflow.analyze(message.args[0] as Parameters<typeof workflow.analyze>[0]);
     case "queryInventory":
       return workflow.queryInventory(message.args[0] as Parameters<typeof workflow.queryInventory>[0]);
+    case "comparePlans":
+      return workflow.comparePlans(message.args[0] as Parameters<typeof workflow.comparePlans>[0]);
     case "queryYuhunDetails":
       return workflow.queryYuhunDetails(message.args[0] as Parameters<typeof workflow.queryYuhunDetails>[0]);
     case "queryDecisions":

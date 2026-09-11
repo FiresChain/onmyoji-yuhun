@@ -17,6 +17,7 @@ import type {
   YuhunDecisionRowDTO
 } from "../../src/browser.js";
 import type { TargetDomain } from "./target-catalog.js";
+import type { SavedPlan } from "./plan-library.js";
 
 export interface SavedProjectV1 {
   readonly schemaVersion: 1;
@@ -149,6 +150,8 @@ export interface WorkbenchViewStateV1 {
   readonly catalog: readonly TargetDomain[];
   readonly selectedSceneIds: readonly string[];
   readonly focusedSceneId: string;
+  readonly teamSelectionMode?: "manual" | "smart";
+  readonly smartDifficultyDecreaseCount?: "auto" | number;
 }
 
 export interface SceneDataExportV1 {
@@ -174,16 +177,59 @@ function database(): Promise<IDBDatabase> {
       reject(new Error("当前浏览器不支持本地持久化"));
       return;
     }
-    const request = indexedDB.open(DATABASE_NAME, 2);
+    const request = indexedDB.open(DATABASE_NAME, 3);
+    let blocked = false;
     request.addEventListener("upgradeneeded", () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
       if (!db.objectStoreNames.contains(SESSION_STORE_NAME)) db.createObjectStore(SESSION_STORE_NAME);
       if (!db.objectStoreNames.contains(SNAPSHOT_STORE_NAME)) db.createObjectStore(SNAPSHOT_STORE_NAME);
+      if (!db.objectStoreNames.contains("plans")) db.createObjectStore("plans", { keyPath: "id" });
     });
-    request.addEventListener("success", () => resolve(request.result));
+    request.addEventListener("success", () => {
+      if (blocked) { request.result.close(); return; }
+      request.result.addEventListener("versionchange", () => request.result.close());
+      resolve(request.result);
+    });
+    request.addEventListener("blocked", () => { blocked = true; reject(new Error("请关闭其他工作台标签页后重试")); });
     request.addEventListener("error", () => reject(request.error));
   });
+}
+
+export async function loadSavedPlans(): Promise<SavedPlan[]> {
+  const db = await database();
+  try {
+    return await new Promise<SavedPlan[]>((resolve, reject) => {
+      const transaction = db.transaction("plans", "readonly");
+      const request = transaction.objectStore("plans").getAll();
+      transaction.addEventListener("complete", () => resolve((request.result as SavedPlan[]).sort((a, b) => b.createdAt.localeCompare(a.createdAt))));
+      transaction.addEventListener("abort", () => reject(transaction.error ?? new Error("读取方案失败")));
+    });
+  } finally { db.close(); }
+}
+
+export async function persistSavedPlan(plan: SavedPlan): Promise<void> {
+  const db = await database();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction("plans", "readwrite");
+      transaction.objectStore("plans").put(plan);
+      transaction.addEventListener("complete", () => resolve());
+      transaction.addEventListener("abort", () => reject(transaction.error ?? new Error("保存方案失败")));
+    });
+  } finally { db.close(); }
+}
+
+export async function deleteSavedPlan(id: string): Promise<void> {
+  const db = await database();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction("plans", "readwrite");
+      transaction.objectStore("plans").delete(id);
+      transaction.addEventListener("complete", () => resolve());
+      transaction.addEventListener("abort", () => reject(transaction.error ?? new Error("删除方案失败")));
+    });
+  } finally { db.close(); }
 }
 
 export async function saveProject(project: SavedProjectV1): Promise<void> {

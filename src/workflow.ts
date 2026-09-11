@@ -34,6 +34,7 @@ import {
 import { STAT_LABELS } from "./mappings.js";
 import type { FilterCriteria, StatId } from "./types.js";
 import { matchFilterShare } from "./matcher.js";
+import { comparePlanCriteria, type PlanCriteria, type PlanDifference, type PlanComparisonFilter, type PlanComparisonResult } from "./plan-comparison.js";
 import { parseGameSnapshot, type SnapshotHeroBase, type YyxYuhun } from "./yyx.js";
 import {
   buildYuhunDecisionRows,
@@ -123,11 +124,45 @@ export interface InventoryStatDTO {
   readonly value: number;
 }
 
+export interface PlanComparisonQuery {
+  readonly base: PlanCriteria;
+  readonly next: PlanCriteria;
+  readonly filter?: PlanComparisonFilter;
+  readonly criteria?: FilterCriteria;
+  readonly search?: string;
+  readonly page?: number;
+  readonly pageSize?: number;
+}
+
+export interface PlanComparisonRowDTO extends InventoryRowDTO {
+  readonly baseDisposition: "discard" | "retain";
+  readonly nextDisposition: "discard" | "retain";
+  readonly difference: PlanDifference;
+}
+
+export interface PlanComparisonDTO extends PageDTO<PlanComparisonRowDTO> {
+  readonly counts: PlanComparisonResult["counts"];
+  readonly baseDiscardCount: number;
+  readonly nextDiscardCount: number;
+}
+
 export interface PageDTO<T> {
   readonly page: number;
   readonly pageSize: number;
   readonly total: number;
   readonly rows: readonly T[];
+}
+
+function inventoryRow(item: YyxYuhun, index: number): InventoryRowDTO {
+  const statEntries = (stats: Partial<Record<StatId, number>>): InventoryStatDTO[] =>
+    Object.entries(stats).map(([stat, value]) => ({ stat: stat as StatId, value }));
+  return {
+    row: index + 1, suit: item.name, position: item.position, star: item.star, level: item.level,
+    mainStat: item.mainStat, mainValue: item.mainValue, intrinsicStats: statEntries(item.intrinsicStats),
+    subStats: Object.keys(item.subStats) as StatId[], subStatValues: statEntries(item.subStats),
+    initialSubStatCount: item.initialSubStats === null ? null : Object.keys(item.initialSubStats).length,
+    locked: item.lock, garbage: item.garbage
+  };
 }
 
 export interface AnalyzeInput {
@@ -555,6 +590,7 @@ export class YuhunWorkflow {
   private checklist: ImportChecklistDTO | null = null;
   private simulation: SimulationSummaryDTO | null = null;
   private frequencyCache: ReturnType<typeof estimateSpeedCategoryFrequencies> | null = null;
+  private comparisonCache: { readonly items: readonly YyxYuhun[]; readonly key: string; readonly result: PlanComparisonResult } | null = null;
   private readonly baselineCache = new Map<string, ReturnType<typeof calculateBaselineBundle>[number]>();
   private readonly decisionCache = new Map<string, SpeedDecisionReport>();
   private readonly planCache = new Map<string, {
@@ -689,25 +725,42 @@ export class YuhunWorkflow {
       (query.garbage === undefined || item.garbage === query.garbage) &&
       (search === "" || item.name.toLocaleLowerCase().includes(search))
     );
-    const statEntries = (stats: Partial<Record<StatId, number>>): InventoryStatDTO[] => (
-      Object.entries(stats).map(([stat, value]) => ({ stat: stat as StatId, value }))
-    );
-    const rows = filtered.slice(start, start + pageSize).map((item) => ({
-      row: this.items!.indexOf(item) + 1,
-      suit: item.name,
-      position: item.position,
-      star: item.star,
-      level: item.level,
-      mainStat: item.mainStat,
-      mainValue: item.mainValue,
-      intrinsicStats: statEntries(item.intrinsicStats),
-      subStats: Object.keys(item.subStats) as StatId[],
-      subStatValues: statEntries(item.subStats),
-      initialSubStatCount: item.initialSubStats === null ? null : Object.keys(item.initialSubStats).length,
-      locked: item.lock,
-      garbage: item.garbage
-    }));
+    const rows = filtered.slice(start, start + pageSize).map(item => inventoryRow(item, this.items!.indexOf(item)));
     return { page, pageSize, total: filtered.length, rows };
+  }
+
+  comparePlans(query: PlanComparisonQuery): PlanComparisonDTO {
+    if (this.items === null) workflowFailure("snapshot", "SNAPSHOT_REQUIRED", "请先导入御魂快照");
+    const { page, pageSize, start } = pageBounds(query.page, query.pageSize);
+    const key = JSON.stringify([query.base, query.next]);
+    if (this.comparisonCache?.items !== this.items || this.comparisonCache.key !== key) {
+      this.comparisonCache = { items: this.items, key, result: comparePlanCriteria(this.items, query.base, query.next) };
+    }
+    const { differences, counts, baseDiscardCount, nextDiscardCount } = this.comparisonCache.result;
+    const criteria = query.criteria;
+    // Inventory filters include locked items; locks affect plan execution only.
+    const matched = criteria && Object.values(criteria).some(value => value.length > 0)
+      ? new Set(matchFilterShare(filterShareFromDraft({ headerHex: "00".repeat(16), planKind: "discard", groups: [{ name: "筛选", criteria }] }), this.items.map(item => ({ ...item, lock: false }))).unionIds)
+      : null;
+    const search = query.search?.trim().toLocaleLowerCase() ?? "";
+    const filter = query.filter ?? "changed";
+    const indices: number[] = [];
+    for (const [index, item] of this.items.entries()) {
+      const difference = differences[index]!;
+      if (filter === "changed" ? difference !== "extra-discard" && difference !== "extra-retain" : filter !== "all" && filter !== difference) continue;
+      if (matched !== null && !matched.has(item.id)) continue;
+      if (search !== "" && !item.name.toLocaleLowerCase().includes(search)) continue;
+      indices.push(index);
+    }
+    const rows = indices.slice(start, start + pageSize).map((index): PlanComparisonRowDTO => {
+      const difference = differences[index]!;
+      return {
+        ...inventoryRow(this.items![index]!, index), difference,
+        baseDisposition: difference === "both-discard" || difference === "extra-retain" ? "discard" : "retain",
+        nextDisposition: difference === "both-discard" || difference === "extra-discard" ? "discard" : "retain"
+      };
+    });
+    return { page, pageSize, rows, total: indices.length, counts, baseDiscardCount, nextDiscardCount };
   }
 
   queryYuhunDetails(ids: readonly string[]): readonly TeamCalculationYuhunDTO[] {
@@ -931,6 +984,7 @@ export class YuhunWorkflow {
     this.checklist = null;
     this.simulation = null;
     this.frequencyCache = null;
+    this.comparisonCache = null;
     this.baselineCache.clear();
     this.decisionCache.clear();
     this.planCache.clear();

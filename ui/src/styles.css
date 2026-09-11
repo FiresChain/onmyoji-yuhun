@@ -439,5 +439,5 @@ code { color: #4d585d; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
 }
 
 @media (max-width: 400px) {
-  .toolbar-actions .icon-button:nth-last-child(2) { display:none; }.brand { gap: 7px; }.template-card { grid-template-columns: 64px 1fr auto; }.template-card img { width: 64px; height: 64px; }.template-card p { font-size: 10px; }.checkbox-grid { grid-template-columns: 1fr; }.codes-grid textarea { min-height: 90px; }.code-head { grid-template-columns: 32px 1fr auto; }.code-letter { width: 30px; height: 30px; }.page-heading .primary { padding: 6px 9px; }
+  .brand { gap: 7px; }.template-card { grid-template-columns: 64px 1fr auto; }.template-card img { width: 64px; height: 64px; }.template-card p { font-size: 10px; }.checkbox-grid { grid-template-columns: 1fr; }.codes-grid textarea { min-height: 90px; }.code-head { grid-template-columns: 32px 1fr auto; }.code-letter { width: 30px; height: 30px; }.page-heading .primary { padding: 6px 9px; }
 }
