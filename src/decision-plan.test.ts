@@ -4,6 +4,7 @@ import { buildDecisionPlan } from "./decision-plan.js";
 import { filterShareFromDraft, previewDualFilterShares, DEFAULT_STATIC_RETENTION_POLICY } from "./rules.js";
 import { YuhunWorkflow } from "./workflow.js";
 import { YUHUN_TYPES } from "./mappings.js";
+import { calculateCleanupQuota, maximumDesiredFreeSlots, normalizeDesiredFreeSlots } from "./capacity.js";
 import type { YyxYuhun } from "./yyx.js";
 
 const header = "00".repeat(16);
@@ -50,6 +51,66 @@ test("empty inventory and all-retain produce no codes", () => {
     assert.equal(plan.discardDraft, null);
     assert.equal(plan.rescueDraft, null);
   }
+});
+
+test("free-slot targets use hundreds strictly below the marked count", () => {
+  for (const [marked, maximum] of [[2831, 2800], [1799, 1700], [2800, 2700], [101, 100], [100, 0], [0, 0]]) {
+    assert.equal(maximumDesiredFreeSlots(marked!), maximum);
+  }
+  assert.equal(normalizeDesiredFreeSlots(500, 2831), 500);
+  assert.equal(normalizeDesiredFreeSlots(500, 350), 300);
+  assert.equal(normalizeDesiredFreeSlots(3000, 1799), 1700);
+  assert.equal(normalizeDesiredFreeSlots(-100, 1799), 0);
+  assert.equal(calculateCleanupQuota({ totalCount: 5816, level15Count: 0, desiredFreeSlots: 500 }).requiredRelease, 316);
+  assert.equal(calculateCleanupQuota({ totalCount: 6050, level15Count: 0, desiredFreeSlots: 500 }).requiredRelease, 550);
+});
+
+test("a cleanup quota stops at whole safe rules without changing retained items", () => {
+  const items = [
+    ...Array.from({ length: 3 }, (_, i) => item(`large-${i}`)),
+    ...Array.from({ length: 2 }, (_, i) => item(`small-${i}`, { name: "火灵", suitId: 300019 })),
+    item("keep", { name: "火灵", suitId: 300019, subStats: { speed: 3 } })
+  ];
+  const wanted = new Set(items.filter(x => x.id !== "keep").map(x => x.id));
+  const preview = (quota: number) => {
+    const plan = buildDecisionPlan(items, wanted, header, quota);
+    return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  };
+  assert.equal(preview(0).finalNewDiscardIds.length, 0);
+  assert.equal(preview(1).finalNewDiscardIds.length, 2);
+  assert.equal(preview(2).finalNewDiscardIds.length, 2);
+  assert.equal(preview(3).finalNewDiscardIds.length, 3);
+  assert.equal(preview(4).finalNewDiscardIds.length, 5);
+  assert.equal(preview(100).finalNewDiscardIds.length, 5);
+  assert.ok(!preview(100).finalNewDiscardIds.includes("keep"));
+});
+
+test("workflow separates target-dependent cache entries and reports unmet capacity", () => {
+  const items = [
+    ...Array.from({ length: 100 }, (_, i) => item(`drop-a-${i}`)),
+    ...Array.from({ length: 101 }, (_, i) => item(`drop-b-${i}`, { name: "火灵", suitId: 300019 }))
+  ];
+  const workflow = new YuhunWorkflow();
+  Object.assign(workflow, { items: [...items, ...Array.from({ length: 5799 }, (_, i) => item(`locked-${i}`, { lock: true }))] });
+  workflow.analyze({ templateIds: [], riskTier: "tier1", defaultDisposition: "discard" });
+  const generate = (desiredFreeSlots: number) => workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots }).summary;
+  assert.equal(generate(100).finalNewDiscardCount, 100);
+  assert.equal(generate(100).desiredFreeSlotsReached, true);
+  assert.equal(generate(200).finalNewDiscardCount, 201);
+  assert.equal(generate(100).finalNewDiscardCount, 100);
+  assert.equal(generate(0).finalNewDiscardCount, 0);
+  assert.equal(generate(0).desiredFreeSlotsReached, true);
+  assert.equal(generate(99999).desiredFreeSlots, 200);
+
+  const blocked = new YuhunWorkflow();
+  Object.assign(blocked, { items: [...Array.from({ length: 5900 }, (_, i) => item(`locked-${i}`, { lock: true })),
+    ...Array.from({ length: 100 }, (_, i) => item(`drop-${i}`)),
+    item("keep-level1", { level: 1 })] });
+  blocked.analyze({ templateIds: [], riskTier: "tier1", defaultDisposition: "discard" });
+  const unmet = blocked.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 500 }).summary;
+  assert.equal(unmet.requiredRelease, 1);
+  assert.equal(unmet.finalNewDiscardCount, 0);
+  assert.equal(unmet.desiredFreeSlotsReached, false);
 });
 test("analysis and generation work without +15 inventory or speed templates", () => {
   const workflow = new YuhunWorkflow();

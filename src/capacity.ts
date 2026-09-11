@@ -4,6 +4,18 @@ export interface YuhunCapacityStep {
 }
 
 export const INITIAL_YUHUN_CAPACITY = 6_000;
+export const DEFAULT_DESIRED_FREE_SLOTS = 500;
+
+/** Largest nonnegative multiple of 100 strictly below the marked discard count. */
+export function maximumDesiredFreeSlots(markedCount: number): number {
+  requireNonNegativeInteger(markedCount, "markedCount");
+  return Math.max(0, Math.floor((markedCount - 1) / 100) * 100);
+}
+
+export function normalizeDesiredFreeSlots(value: number, markedCount: number): number {
+  const requested = Number.isFinite(value) ? Math.round(value / 100) * 100 : DEFAULT_DESIRED_FREE_SLOTS;
+  return Math.max(0, Math.min(maximumDesiredFreeSlots(markedCount), requested));
+}
 
 export const YUHUN_CAPACITY_STEPS: readonly YuhunCapacityStep[] = [
   { level15Count: 1_000, capacity: 7_000 },

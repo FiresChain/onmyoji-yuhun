@@ -8,6 +8,12 @@ import EChart from "../components/EChart.vue";
 import { useWorkbenchStore } from "../store.js";
 
 const store = useWorkbenchStore();
+const targetShortfall = computed(() => Math.max(0, (store.plan?.requiredRelease ?? 0) - (store.plan?.finalNewDiscardCount ?? 0)));
+function updateDesiredFreeSlots(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  store.setDesiredFreeSlots(input.value === "" ? 500 : Number(input.value));
+  input.value = String(store.desiredFreeSlots);
+}
 const funnelOption = computed(() => ({
   tooltip: { trigger: "axis" },
   grid: { left: 90, right: 34, top: 10, bottom: 25 },
@@ -70,18 +76,34 @@ const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targets
 <template>
   <section class="page-heading"><div><span class="eyebrow">04 / CODES</span><h1>双码、预演与验证</h1></div><span class="tag" :class="store.copyAllowed ? 'success-tag' : 'danger-tag'"><ShieldCheck :size="14" />{{ store.copyAllowed ? '复制门禁通过' : '复制已阻塞' }}</span></section>
 
-  <div class="code-generation-actions"><button class="primary" :disabled="!store.analysis || !!store.busy" @click="store.generatePlan"><LoaderCircle v-if="store.busy === '正在生成并预演 D/E'" class="spin" :size="17" /><Play v-else :size="17" />{{ store.busy === '正在生成并预演 D/E' ? '正在生成…' : store.plan ? '重新生成并预演' : '生成并预演' }}</button></div>
+  <div class="code-generation-actions">
+    <div v-if="store.analysis" class="capacity-target">
+      <label for="desired-free-slots">预期空位
+        <input id="desired-free-slots" type="number" inputmode="numeric" min="0" :max="store.desiredFreeSlotsMaximum" step="100" :value="store.desiredFreeSlots" :disabled="!!store.busy || store.desiredFreeSlotsMaximum === 0" aria-describedby="capacity-target-help" @change="updateDesiredFreeSlots" />
+      </label>
+      <span id="capacity-target-help">清理后希望保留的总空位；本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件。上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}（严格小于标记数的最大整百数）。</span>
+      <span v-if="store.desiredFreeSlotsMaximum === 0">标记不超过 100 件，整百目标为 0；若背包已超容，仍会尝试清理超出部分。</span>
+    </div>
+    <button class="primary" :disabled="!store.analysis || !!store.busy" @click="store.generatePlan"><LoaderCircle v-if="store.busy === '正在生成并预演 D/E'" class="spin" :size="17" /><Play v-else :size="17" />{{ store.busy === '正在生成并预演 D/E' ? '正在生成…' : store.plan ? '重新生成并预演' : '生成并预演' }}</button>
+  </div>
 
   <template v-if="store.plan">
+    <div v-if="store.plan.desiredFreeSlots !== undefined" class="capacity-target-result" role="status" :class="{ 'target-unmet': !store.plan.desiredFreeSlotsReached }">
+      <strong>预期空位 {{ store.plan.desiredFreeSlots.toLocaleString() }} · {{ store.plan.desiredFreeSlotsReached ? '预演达标' : `尚差 ${targetShortfall.toLocaleString()} 件清理` }}</strong>
+      <span v-if="store.plan.requiredRelease === 0">当前库存已满足空位目标，本次无需弃置。</span>
+      <span v-else-if="store.plan.desiredFreeSlotsReached">本次预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件；规则整组执行，可能超过目标。</span>
+      <span v-else>当前方案受规则表达及每码 60 组限制，尚未达到目标。实际清理量以预演为准。</span>
+      <span>仅标记弃置不会立即增加空位；这里预估的是最终消耗或移除这些御魂后的容量。</span>
+    </div>
     <div v-if="store.plan.capacityProjection && store.plan.cleanupComparison" class="metric-strip six capacity-strip" aria-label="双码预演清理对账">
       <div data-testid="plan-marked-count"><span>标记数量</span><strong>{{ store.plan.cleanupComparison.markedCount.toLocaleString() }}</strong></div>
       <div data-testid="plan-cleanup-count"><span>方案清理数量</span><strong>{{ store.plan.cleanupComparison.planCleanupCount.toLocaleString() }}</strong></div>
-      <div data-testid="plan-cleanup-difference"><span title="方案清理数量 - 标记数量">清理误差</span><strong>{{ store.plan.cleanupComparison.netDifference > 0 ? '+' : '' }}{{ store.plan.cleanupComparison.netDifference.toLocaleString() }}</strong></div>
-      <div data-testid="plan-affected-count"><span :title="`漏清 ${store.plan.cleanupComparison.missedMarkedCount.toLocaleString()} 件，额外清理 ${store.plan.cleanupComparison.extraCleanupCount.toLocaleString()} 件`">误差影响御魂</span><strong>{{ store.plan.cleanupComparison.affectedCount.toLocaleString() }}</strong></div>
+      <div data-testid="plan-cleanup-difference"><span title="方案清理数量 - 全部标记数量；容量目标不要求清理所有标记">与标记数之差</span><strong>{{ store.plan.cleanupComparison.netDifference > 0 ? '+' : '' }}{{ store.plan.cleanupComparison.netDifference.toLocaleString() }}</strong></div>
+      <div data-testid="plan-affected-count"><span :title="`未纳入方案 ${store.plan.cleanupComparison.missedMarkedCount.toLocaleString()} 件，额外清理 ${store.plan.cleanupComparison.extraCleanupCount.toLocaleString()} 件`">与标记不一致</span><strong>{{ store.plan.cleanupComparison.affectedCount.toLocaleString() }}</strong></div>
       <div data-testid="plan-capacity-after-count"><span>应用后御魂</span><strong>{{ store.plan.capacityProjection.after.totalCount.toLocaleString() }}</strong></div>
       <div data-testid="plan-capacity-after-free"><span>应用后空位</span><strong>{{ store.plan.capacityProjection.after.overCapacityCount > 0 ? `超出 ${store.plan.capacityProjection.after.overCapacityCount.toLocaleString()}` : store.plan.capacityProjection.after.freeSlots.toLocaleString() }}</strong></div>
     </div>
-    <div v-if="store.plan.cleanupComparison && store.plan.cleanupComparison.affectedCount > 0" class="inline-warning cleanup-difference-note">漏清 {{ store.plan.cleanupComparison.missedMarkedCount.toLocaleString() }} 件 · 额外清理 {{ store.plan.cleanupComparison.extraCleanupCount.toLocaleString() }} 件</div>
+    <div v-if="store.plan.cleanupComparison && store.plan.cleanupComparison.affectedCount > 0" class="inline-warning cleanup-difference-note">未纳入方案 {{ store.plan.cleanupComparison.missedMarkedCount.toLocaleString() }} 件 · 额外清理 {{ store.plan.cleanupComparison.extraCleanupCount.toLocaleString() }} 件。达到空位目标即可，无需清理全部标记。</div>
     <div class="section-toolbar unframed"><div><h2>双码规则</h2></div><span class="tag">只读</span></div>
     <div class="preset-pools generated-code-pools">
       <article v-for="pool in codePools" :key="pool.code" class="preset-pool" :class="{ 'discard-pool': pool.kind === 'discard' }" :aria-label="pool.title">
@@ -105,6 +127,7 @@ const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targets
     </div>
     <div class="split-layout chart-band"><div class="panel-block"><div class="block-title"><h2>账号池漏斗</h2><span>D \ E</span></div><EChart :option="funnelOption" :height="250" /><div v-if="store.plan.incidentalRestoreCount > 0" class="inline-warning">历史弃置池额外命中 {{ store.plan.incidentalRestoreCount }} 件</div></div><div class="panel-block"><div class="block-title"><h2>严格门禁</h2><span>{{ Object.values(store.gateState).filter(Boolean).length }} / 8</span></div><div class="gate-list"><div v-for="(label,key) in gateLabels" :key="key" :class="{ passed: store.gateState[key] }"><Check v-if="store.gateState[key]" :size="16" /><Ban v-else :size="16" /><span>{{ label }}</span></div></div></div></div>
     <section class="simulation-band"><div><h2>当前库存覆盖验证</h2><span>生成时自动检查 D−E：不误弃保留项，仅清理正常池未锁定的六星 +0 御魂。无法区分的御魂一并保留，组数限制可能导致少清理；更换快照或修改决策后需重新生成。</span></div><span class="tag success-tag" v-if="store.gateState.retainedItemsProtected">验证通过</span></section>
+    <p class="code-operation-note">执行顺序：正常池用 D 标记弃置，再到弃置池用配套 E 筛选并恢复；E 是捡回步骤，无需强化御魂。没有 E 时只执行 D。当前页面生成一组方案；后续轮次须基于更新后的库存重新生成，不能直接套用上一轮 E。</p>
   </template>
   <div v-else class="empty-state"><ShieldCheck :size="32" /><strong>尚未生成双码</strong><span>完成账号分析后，即可生成并预演。</span></div>
   <div v-if="viewedRule" class="modal-backdrop" @click.self="viewedRule = null" @keydown.esc="viewedRule = null">
@@ -135,7 +158,15 @@ const gateLabels: Record<string,string> = { snapshotValid:"快照有效",targets
 </template>
 
 <style scoped>
-.code-generation-actions { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+.code-generation-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+.code-generation-actions > button { margin-left: auto; }
+.capacity-target { display: grid; gap: 7px; flex: 1; min-width: 240px; }
+.capacity-target label { display: flex; align-items: center; gap: 12px; font-weight: 600; }
+.capacity-target input { width: 110px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.capacity-target > span, .capacity-target-result > span, .code-operation-note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.capacity-target-result { display: grid; gap: 5px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; }
+.capacity-target-result.target-unmet { border-left-color: var(--red); }
+.code-operation-note { margin-top: 14px; }
 .generated-code-pools { margin-bottom: 18px; align-items: start; }
 .generated-code-value { display: grid; gap: 6px; padding: 12px 13px; border-bottom: 1px solid var(--line); }
 .generated-code-value label { font-size: 10px; color: var(--muted); }

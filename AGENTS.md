@@ -166,6 +166,18 @@ This is the main configuration surface.
 
 ### 4. Dual Codes, Preview, and Validation (`ui/src/views/codes.vue`)
 
+- The desired free-slot input means final inventory free slots, defaults to 500,
+  and is capped at the greatest nonnegative multiple of 100 strictly below the
+  marked-discard count (2831 -> 2800, 1799 -> 1700, 2800 -> 2700). A count of 100
+  or fewer gives a zero target. Changes persist in session/project settings and
+  invalidate only the generated plan. The Worker derives the required release
+  from current capacity (including overflow), stops after enough whole safe
+  rules, and reports whether the target was reached. Insufficient coverage does
+  not imply a safety failure; the existing safety gates remain independent.
+- Generation still returns one D/E pair. Multi-round experiments and safe reuse
+  of E are documented in the internal research repository, not implemented as
+  a multi-round execution UI. E is used to restore items from the discard pool,
+  not to spend enhancement resources.
 - Generates and previews the D discard and E rescue codes directly after
   analysis, without a Header-source field. The encode API resolves its default
   ID; the frontend sends only plan kind and groups. Local matching uses an

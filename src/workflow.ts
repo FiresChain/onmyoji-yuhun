@@ -1,6 +1,6 @@
 import { calculateBaselineBundle, type DominanceThresholds } from "./baseline.js";
 import { buildDecisionPlan, type DecisionPlan } from "./decision-plan.js";
-import { calculateYuhunCapacity } from "./capacity.js";
+import { calculateYuhunCapacity, normalizeDesiredFreeSlots } from "./capacity.js";
 import {
   decideSpeedCategories,
   FREQUENCY_BIAS_NOTICE,
@@ -260,6 +260,8 @@ export interface GeneratePlanInput {
   /** Optional legacy header; the encode API supplies the actual ID on export. */
   readonly headerHex?: string;
   readonly staticPolicy: StaticRetentionPolicy;
+  /** Desired final free slots in the account inventory. */
+  readonly desiredFreeSlots?: number;
 }
 
 /** Drafts are sent to onmyoji-api for private binary encoding and are never persisted. */
@@ -293,6 +295,12 @@ export interface PlanSummaryDTO {
   readonly finalNewDiscardCount: number;
   readonly capacityProjection: CapacityProjectionDTO | null;
   readonly cleanupComparison: CleanupComparisonDTO | null;
+  /** Capacity target used for this preview, when supplied by the UI. */
+  readonly desiredFreeSlots?: number;
+  /** Minimum release required to reach desiredFreeSlots from the pre-plan inventory. */
+  readonly requiredRelease?: number;
+  /** Whether the generated final cleanup reaches the desired capacity target. */
+  readonly desiredFreeSlotsReached?: boolean;
   readonly groups: readonly PreviewGroupDTO[];
 }
 
@@ -449,7 +457,8 @@ function mergeThresholds(parts: readonly DominanceThresholds[]): DominanceThresh
 function previewGroups(
   plan: DecisionPlan,
   items: readonly YyxYuhun[],
-  markedDiscardIds: ReadonlySet<string>
+  markedDiscardIds: ReadonlySet<string>,
+  desiredFreeSlots?: number
 ): {
   summary: PlanSummaryDTO;
   checklist: ImportChecklistDTO;
@@ -487,6 +496,12 @@ function previewGroups(
     missedMarkedCount,
     extraCleanupCount
   };
+  const normalizedDesiredFreeSlots = desiredFreeSlots === undefined
+    ? undefined
+    : Math.max(0, Number.isSafeInteger(desiredFreeSlots) ? desiredFreeSlots : 0);
+  const requiredRelease = normalizedDesiredFreeSlots === undefined
+    ? undefined
+    : Math.max(0, capacityProjection.before.totalCount + normalizedDesiredFreeSlots - capacityProjection.before.capacity);
   const sections: ChecklistSectionDTO[] = [
     { id: "discard-normal", title: "D · 正常池", code: "D", pool: "normal", groups: groups.filter((group) => group.pool === "normal") },
     { id: "rescue-new", title: "E · 新弃置池", code: "E", pool: "new-garbage", groups: groups.filter((group) => group.pool === "new-garbage") },
@@ -509,6 +524,11 @@ function previewGroups(
       finalNewDiscardCount: preview.finalNewDiscardIds.length,
       capacityProjection,
       cleanupComparison,
+      ...(normalizedDesiredFreeSlots === undefined ? {} : {
+        desiredFreeSlots: normalizedDesiredFreeSlots,
+        requiredRelease: requiredRelease ?? 0,
+        desiredFreeSlotsReached: finalDiscardIds.size >= (requiredRelease ?? 0)
+      }),
       groups
     },
     checklist: {
@@ -728,12 +748,17 @@ export class YuhunWorkflow {
       // Matching does not depend on the account ID. This placeholder stays in
       // local semantic drafts; the UI omits it when calling the encode API.
       const headerHex = input.headerHex ?? "00".repeat(16);
-      const planInput = { headerHex };
+      const desiredFreeSlots = input.desiredFreeSlots === undefined ? undefined
+        : normalizeDesiredFreeSlots(input.desiredFreeSlots, this.markedDiscardIds.size);
+      const before = inventoryCapacity(this.items);
+      const requiredRelease = desiredFreeSlots === undefined ? undefined
+        : Math.max(0, before.totalCount + desiredFreeSlots - before.capacity);
+      const planInput = { headerHex, desiredFreeSlots };
       const planKey = JSON.stringify({ planInput, analysisKey: this.analysisKey });
       const cached = this.planCache.get(planKey);
-      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex);
+      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex, requiredRelease);
       const preview = cached === undefined
-        ? previewGroups(plan, this.items, this.markedDiscardIds)
+        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots)
         : { summary: cached.summary, checklist: cached.checklist };
       if (cached === undefined) {
         this.planCache.set(planKey, { plan, summary: preview.summary, checklist: preview.checklist });

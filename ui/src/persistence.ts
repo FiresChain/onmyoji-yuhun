@@ -30,6 +30,7 @@ export interface SavedProjectV1 {
     readonly templateIds: readonly string[];
     readonly riskTier: "tier0" | "tier1";
     readonly defaultDisposition?: "retain" | "discard";
+    readonly desiredFreeSlots?: number;
     readonly budgetPerTenThousand: number;
     readonly staticPolicy: StaticRetentionPolicy;
   };

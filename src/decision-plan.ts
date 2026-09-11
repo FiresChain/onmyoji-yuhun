@@ -16,8 +16,9 @@ function draft(headerHex: string, kind: "discard" | "enhance", groups: FilterCri
 }
 
 /** Current-inventory safe rule compression. Unknown/future inventory is not certified. */
-export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: ReadonlySet<string>, headerHex: string): DecisionPlan {
+export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: ReadonlySet<string>, headerHex: string, requiredRelease = Infinity): DecisionPlan {
   if (!/^[0-9a-f]{32}$/i.test(headerHex)) throw new Error("Header 必须是 16 字节十六进制");
+  if (requiredRelease !== Infinity && (!Number.isSafeInteger(requiredRelease) || requiredRelease < 0)) throw new Error("清理目标必须为非负整数");
   const domain = items.filter(item => !item.lock && !item.garbage && item.star === 6 && item.level <= 2);
   const wanted = new Set(domain.filter(item => item.level === 0 && discardIds.has(item.id)).map(item => item.id));
   const buckets = new Map<string, { criteria: FilterCriteria; wanted: number; protected: boolean }>();
@@ -30,10 +31,24 @@ export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: Readon
   // Always available fallback: at most 60 exact, safe buckets, ranked by cleanup.
   const safe = [...buckets.values()].filter(bucket => !bucket.protected && bucket.wanted > 0)
     .sort((a, b) => b.wanted - a.wanted || key(a.criteria).localeCompare(key(b.criteria)));
-  let discardDraft = draft(headerHex, "discard", safe.slice(0, 60).map(bucket => bucket.criteria));
+  const selected: typeof safe = [];
+  let best = 0;
+  const available = [...safe];
+  while (available.length && selected.length < 60 && best < requiredRelease) {
+    const remaining = requiredRelease - best;
+    // A whole rule must be applied. Prefer the smallest rule that finishes the
+    // quota when the largest rule would otherwise overshoot it.
+    let index = 0;
+    if (available[0]!.wanted >= remaining) {
+      for (let i = 1; i < available.length && available[i]!.wanted >= remaining; i++) index = i;
+    }
+    const bucket = available.splice(index, 1)[0]!;
+    selected.push(bucket);
+    best += bucket.wanted;
+  }
+  let discardDraft = draft(headerHex, "discard", selected.map(bucket => bucket.criteria));
   let rescueDraft: YuhunFilterDraft | null = null;
-  let best = safe.slice(0, 60).reduce((sum, bucket) => sum + bucket.wanted, 0);
-  if (wanted.size) {
+  if (wanted.size && best < requiredRelease) {
     const broad = { ...criteria(domain[0]!), types: [], positions: [], mainStats: [], subStats: [] };
     const broadD = draft(headerHex, "discard", [broad]);
     let protections = [...buckets.values()].filter(bucket => bucket.protected).map(bucket => bucket.criteria);
@@ -43,7 +58,10 @@ export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: Readon
       if (protections.length > 60) continue;
       const e = draft(headerHex, "enhance", protections);
       const preview = previewDualFilterShares({ items, discardShare: broadD && filterShareFromDraft(broadD), rescueShare: e && filterShareFromDraft(e) });
-      if (preview.finalNewDiscardIds.length > best) { best = preview.finalNewDiscardIds.length; discardDraft = broadD; rescueDraft = e; }
+      if (preview.finalNewDiscardIds.length > best) {
+        best = preview.finalNewDiscardIds.length; discardDraft = broadD; rescueDraft = e;
+        if (best >= requiredRelease) break;
+      }
     }
   }
   const preview = previewDualFilterShares({ items, discardShare: discardDraft && filterShareFromDraft(discardDraft), rescueShare: rescueDraft && filterShareFromDraft(rescueDraft) });

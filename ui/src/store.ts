@@ -1,5 +1,6 @@
 import { computed, ref, shallowRef, watch } from "vue";
 import { defineStore } from "pinia";
+import { DEFAULT_DESIRED_FREE_SLOTS, maximumDesiredFreeSlots, normalizeDesiredFreeSlots } from "../../src/capacity.js";
 import type {
   AnalysisSummaryDTO,
   AnalysisRuleInput,
@@ -253,6 +254,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const templateIds = ref<Array<"zhaocai-speed" | "scattered-speed">>(["zhaocai-speed", "scattered-speed"]);
   const riskTier = ref<"tier0" | "tier1">("tier1");
   const defaultDisposition = ref<"retain" | "discard">("retain");
+  const desiredFreeSlotsPreference = ref(DEFAULT_DESIRED_FREE_SLOTS);
+  const desiredFreeSlotsMaximum = computed(() => maximumDesiredFreeSlots(analysis.value?.markedDiscardProjection.discardCount ?? 0));
+  const desiredFreeSlots = computed(() => analysis.value === null ? desiredFreeSlotsPreference.value
+    : normalizeDesiredFreeSlots(desiredFreeSlotsPreference.value, analysis.value.markedDiscardProjection.discardCount));
+  const requiredReleaseForTarget = computed(() => analysis.value === null ? 0
+    : Math.max(0, analysis.value.inventoryCapacity.totalCount + desiredFreeSlots.value - analysis.value.inventoryCapacity.capacity));
   const budgetPerTenThousand = ref(1);
   const staticPolicy = ref<StaticRetentionPolicy>({ ...DEFAULT_POLICY });
   const existingFilterCode = ref("");
@@ -620,6 +627,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       settings: {
         templateIds: templateIds.value,
         defaultDisposition: defaultDisposition.value,
+        desiredFreeSlots: desiredFreeSlotsPreference.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
@@ -674,7 +682,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   watch(
-    [snapshot, templateIds, riskTier, defaultDisposition, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
+    [snapshot, templateIds, riskTier, defaultDisposition, desiredFreeSlotsPreference, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
     scheduleSessionPersist,
     { deep: true }
   );
@@ -688,6 +696,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       rawSnapshotBuffer = persistedBuffer;
       snapshotNeedsPersist = true;
       snapshot.value = imported;
+      desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
       teamCalculations.value = [];
       teamCalculationProgress.value = {};
       teamCalculationPaused.value = false;
@@ -736,6 +745,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       templateIds.value = stored.session.settings.templateIds.filter((id): id is "zhaocai-speed" | "scattered-speed" => id === "zhaocai-speed" || id === "scattered-speed");
       riskTier.value = stored.session.settings.riskTier;
       defaultDisposition.value = stored.session.settings.defaultDisposition ?? "retain";
+      desiredFreeSlotsPreference.value = stored.session.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
       budgetPerTenThousand.value = stored.session.settings.budgetPerTenThousand;
       staticPolicy.value = { ...stored.session.settings.staticPolicy };
       existingFilterCode.value = stored.session.settings.existingFilterCode;
@@ -1539,6 +1549,19 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     invalidateAnalysisResults();
   }
 
+  function setDesiredFreeSlots(next: number): void {
+    if (busy.value !== null || analysis.value === null) return;
+    const normalized = normalizeDesiredFreeSlots(next, analysis.value.markedDiscardProjection.discardCount);
+    if (desiredFreeSlots.value === normalized) return;
+    desiredFreeSlotsPreference.value = normalized;
+    plan.value = null;
+    simulation.value = null;
+    checklist.value = null;
+    mobileHandoff.value = null;
+    actuals.value = {};
+    gateState.value = {};
+  }
+
   function setRiskTier(next: "tier0" | "tier1"): void {
     if (riskTier.value === next) return;
     riskTier.value = next;
@@ -1568,7 +1591,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan.value = null;
     gateState.value = {};
     try {
-      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value });
+      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value, desiredFreeSlots: desiredFreeSlots.value });
       const encode = (draft: NonNullable<GeneratedPlanDTO["discardDraft"]>) => encodeYuhunDraft({ planKind: draft.planKind, groups: draft.groups });
       const [discard, rescue] = await Promise.all([
         generated.discardDraft === null ? Promise.resolve(null) : encode(generated.discardDraft),
@@ -1715,6 +1738,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       settings: {
         templateIds: templateIds.value,
         riskTier: riskTier.value,
+        desiredFreeSlots: desiredFreeSlotsPreference.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
         defaultDisposition: defaultDisposition.value
@@ -1738,6 +1762,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     defaultDisposition.value = project.settings.defaultDisposition ?? "retain";
     budgetPerTenThousand.value = project.settings.budgetPerTenThousand;
     staticPolicy.value = project.settings.staticPolicy;
+    desiredFreeSlotsPreference.value = project.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
     staticPolicy.value = { ...staticPolicy.value, confirmed: true };
     teamTargets.value = builtInTeamTargets();
     nextTeamTargetId = 1;
@@ -1921,6 +1946,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     targetCatalog.value = TARGET_CATALOG;
     staticPolicy.value = { ...DEFAULT_POLICY };
     defaultDisposition.value = "retain";
+    desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
     sessionReady = true;
     restoreCompleted.value = true;
     notice.value = "内存会话和本机自动保存已清空";
@@ -1943,7 +1969,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
     invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount, setTeamCalculationSchedulerDebugEnabled, clearTeamCalculationSchedulerDebugLog,
-    defaultDisposition, setDefaultDisposition, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
+    defaultDisposition, setDefaultDisposition, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets
   };

@@ -51,6 +51,11 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   const json = { version: "test", timestamp: "test", data: { hero_equips: [{ id: "synthetic", equip_id: 1, suit_id: 300010, pos: 1, quality: 6, level: 0, born: 0, lock: false, garbage: false, base_attr: { type: "Speed", value: 12 }, attrs: [], random_attrs: [], random_attr_rates: [], single_attrs: [] }] } };
+  const original = json.data.hero_equips[0]!;
+  json.data.hero_equips = [
+    ...Array.from({ length: 501 }, (_, i) => ({ ...original, id: `drop-${i}` })),
+    ...Array.from({ length: 5499 }, (_, i) => ({ ...original, id: `locked-${i}`, lock: true }))
+  ];
   const snapshotBuffer = new TextEncoder().encode(JSON.stringify(json)).buffer;
   const workflow = new YuhunWorkflow();
   const snapshotSummary = workflow.importSnapshot(json, createHash("sha256").update(new Uint8Array(snapshotBuffer)).digest("hex"));
@@ -76,6 +81,32 @@ beforeEach(() => {
 afterEach(() => { disposePinia(pinia); vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("dual-code session persistence", () => {
+  it("defaults to 500, persists the capacity target and clears only the generated plan on changes", async () => {
+    const store = newStore();
+    await store.restoreLocalSession();
+    expect(store.desiredFreeSlots).toBe(500);
+    expect(store.desiredFreeSlotsMaximum).toBe(500);
+    expect(store.requiredReleaseForTarget).toBe(500);
+    await store.generatePlan();
+    const analysis = store.analysis;
+    store.actuals = { "discard-normal:0": "501" };
+    store.setDesiredFreeSlots(300);
+    expect(store.analysis).toBe(analysis);
+    expect(store.plan).toBeNull();
+    expect(store.actuals).toEqual({});
+    expect(store.copyAllowed).toBe(false);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(saved.session.settings.desiredFreeSlots).toBe(300);
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.desiredFreeSlots).toBe(300);
+    restored.setDesiredFreeSlots(2000);
+    expect(restored.desiredFreeSlots).toBe(500);
+    restored.setDesiredFreeSlots(0);
+    await restored.generatePlan();
+    expect(restored.plan?.desiredFreeSlotsReached).toBe(true);
+    expect(restored.plan?.discardCode).toBeNull();
+  });
   it("makes startup and route guards await the same restoration", async () => {
     const store = newStore();
     let finishLoad!: (value: StoredWorkbenchSessionV1) => void;
