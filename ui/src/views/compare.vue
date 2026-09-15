@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ArrowLeftRight, Download, Eye, FileJson, GitCompareArrows, LoaderCircle, Pencil, Search, SlidersHorizontal, Trash2, Upload, X } from "@lucide/vue";
+import { ArrowLeftRight, Check, ClipboardPaste, Download, Eye, FileJson, GitCompareArrows, ImageUp, Import, LoaderCircle, Pencil, ScanQrCode, Search, SlidersHorizontal, Trash2, TriangleAlert, Upload, X } from "@lucide/vue";
 import { STAT_LABELS, type PlanComparisonDTO, type PlanComparisonFilter, type PlanDifference, type StatId } from "../../../src/browser.js";
 import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunDisplayName, yuhunImage } from "../manual-target-config.js";
 import type { SavedPlan } from "../plan-library.js";
 import { useWorkbenchStore } from "../store.js";
+import { decodeYuhunCodeFromQrImage, readYuhunCodeFromClipboard } from "../team-code-qr.js";
 import { emptyYuhunFilter } from "../yuhun-filter.js";
 
 const store = useWorkbenchStore();
@@ -57,7 +58,7 @@ async function loadComparison(page = 1): Promise<void> {
 
 watch([() => store.comparisonBaseId, () => store.comparisonNextId, () => store.snapshot, filter, criteria], () => { void loadComparison(); }, { immediate: true });
 onMounted(() => { void loadLibrary(); });
-onBeforeUnmount(() => { comparisonRequest++; });
+onBeforeUnmount(() => { comparisonRequest++; importSequence++; });
 
 function swapPlans(): void {
   [store.comparisonBaseId, store.comparisonNextId] = [store.comparisonNextId, store.comparisonBaseId];
@@ -77,43 +78,88 @@ function formatStatValue(stat: StatId, value: number): string {
 function dateLabel(date: string): string { return new Date(date).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
 
 const importOpen = ref(false);
-const importMode = ref<"codes" | "file">("codes");
 const importName = ref("");
-const discardCode = ref("");
-const rescueCode = ref("");
+const codeFields = [{ key: "discard", label: "弃置码" }, { key: "rescue", label: "强化码" }] as const;
+type CodeField = typeof codeFields[number]["key"];
+const importCodes = ref({ discard: "", rescue: "" });
+const qrTarget = ref<CodeField>("discard");
+const qrImageInput = ref<HTMLInputElement | null>(null);
+const planFileInput = ref<HTMLInputElement | null>(null);
 const importError = ref("");
-const importBusy = ref(false);
+const importMessage = ref("");
+const importBusy = ref<"image" | "clipboard" | "decode" | "file" | null>(null);
+let importSequence = 0;
 function openImport(): void {
+  importSequence++;
   importName.value = "";
-  discardCode.value = "";
-  rescueCode.value = "";
+  importCodes.value = { discard: "", rescue: "" };
+  qrTarget.value = "discard";
   importError.value = "";
-  importMode.value = "codes";
+  importMessage.value = "";
   importOpen.value = true;
 }
-async function importCodes(): Promise<void> {
-  importBusy.value = true;
+function chooseQrImage(target: CodeField): void {
+  qrTarget.value = target;
+  qrImageInput.value?.click();
+}
+async function recognizeCode(target: CodeField, source: "image" | "clipboard", image?: Blob): Promise<void> {
+  if (importBusy.value !== null) return;
+  const sequence = ++importSequence;
+  qrTarget.value = target;
+  importBusy.value = source;
   importError.value = "";
+  importMessage.value = "正在识别御魂码…";
   try {
-    await store.importSavedPlan({ name: importName.value, discardCode: discardCode.value, rescueCode: rescueCode.value });
+    const code = image ? await decodeYuhunCodeFromQrImage(image) : (await readYuhunCodeFromClipboard()).code;
+    if (sequence !== importSequence) return;
+    importCodes.value[target] = code;
+    importMessage.value = `识别成功，已填入${target === "discard" ? "弃置码" : "强化码"}`;
+  } catch (reason) {
+    if (sequence !== importSequence) return;
+    importError.value = reason instanceof Error ? reason.message : "御魂码识别失败";
+  } finally {
+    if (sequence === importSequence) importBusy.value = null;
+  }
+}
+async function readQrImage(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (file) await recognizeCode(qrTarget.value, "image", file);
+}
+async function handleCodePaste(event: ClipboardEvent, target: CodeField): Promise<void> {
+  const image = Array.from(event.clipboardData?.items ?? [])
+    .find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
+  if (!image) return;
+  event.preventDefault();
+  await recognizeCode(target, "clipboard", image);
+}
+async function importCodePlan(): Promise<void> {
+  if (importBusy.value !== null) return;
+  importBusy.value = "decode";
+  importError.value = "";
+  importMessage.value = "正在解码并导入…";
+  try {
+    await store.importSavedPlan({ name: importName.value, discardCode: importCodes.value.discard, rescueCode: importCodes.value.rescue });
     importOpen.value = false;
     store.notice = "方案已导入";
   } catch (reason) { importError.value = reason instanceof Error ? reason.message : "导入失败"; }
-  finally { importBusy.value = false; }
+  finally { importBusy.value = null; }
 }
 async function importFile(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = "";
-  if (!file) return;
-  importBusy.value = true;
+  if (!file || importBusy.value !== null) return;
+  importBusy.value = "file";
   importError.value = "";
+  importMessage.value = "正在导入方案文件…";
   try {
     await store.importSavedPlanFile(file);
     importOpen.value = false;
     store.notice = "方案已导入";
   } catch (reason) { importError.value = reason instanceof Error ? reason.message : "导入失败"; }
-  finally { importBusy.value = false; }
+  finally { importBusy.value = null; }
 }
 
 const viewedPlan = ref<SavedPlan | null>(null);
@@ -199,12 +245,34 @@ function exportPlan(plan: SavedPlan): void {
     </div>
   </div>
   <div v-if="importOpen" class="modal-backdrop" @click.self="!importBusy && (importOpen = false)" @keydown.esc="!importBusy && (importOpen = false)">
-    <section class="import-dialog plan-import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-plan-title">
-      <header><h2 id="import-plan-title">导入方案</h2><button class="icon-button" aria-label="关闭" :disabled="importBusy" @click="importOpen = false"><X :size="18" /></button></header>
-      <div class="target-entry-tabs"><button :class="{ active: importMode === 'codes' }" :disabled="importBusy" @click="importMode = 'codes'">御魂码</button><button :class="{ active: importMode === 'file' }" :disabled="importBusy" @click="importMode = 'file'">方案文件</button></div>
-      <form v-if="importMode === 'codes'" class="plan-import-form" @submit.prevent="importCodes"><label>方案名称<input v-model="importName" maxlength="80" required :disabled="importBusy" /></label><label>弃置码<textarea v-model="discardCode" rows="4" :disabled="importBusy" spellcheck="false" /></label><label>捡回码（可选）<textarea v-model="rescueCode" rows="4" :disabled="importBusy" spellcheck="false" /></label><p v-if="importError" class="inline-warning" role="alert">{{ importError }}</p><button class="primary" type="submit" :disabled="importBusy || !importName.trim() || (!discardCode.trim() && !rescueCode.trim())"><Upload :size="16" />{{ importBusy ? '正在导入…' : '导入' }}</button></form>
-      <div v-else class="plan-import-form"><label>方案 JSON<input type="file" accept="application/json,.json" :disabled="importBusy" @change="importFile" /></label><span v-if="importBusy">正在导入…</span><p v-if="importError" class="inline-warning" role="alert">{{ importError }}</p></div>
-    </section>
+    <form class="import-dialog plan-import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-plan-title" :aria-busy="importBusy !== null" @submit.prevent="importCodePlan">
+      <header><h2 id="import-plan-title">导入方案</h2><button class="icon-button" type="button" aria-label="关闭" :disabled="importBusy !== null" @click="importOpen = false"><X :size="18" /></button></header>
+      <div class="target-entry-tabs" role="tablist" aria-label="方案导入方式">
+        <button id="plan-code-tab" class="active" type="button" role="tab" aria-selected="true" aria-controls="plan-code-entry"><Import :size="16" />御魂码导入</button>
+      </div>
+      <div id="plan-code-entry" class="target-code-entry" role="tabpanel" aria-labelledby="plan-code-tab">
+        <label><span>方案名称</span><input v-model="importName" maxlength="80" required :disabled="importBusy !== null" placeholder="输入方案名称" /></label>
+        <section v-for="field in codeFields" :key="field.key" class="plan-code-field" :aria-labelledby="`plan-${field.key}-title`" @paste="handleCodePaste($event, field.key)">
+          <label class="import-code-field"><span :id="`plan-${field.key}-title`">{{ field.label }}</span><textarea v-model="importCodes[field.key]" rows="3" spellcheck="false" :disabled="importBusy !== null" :placeholder="`粘贴${field.label}，或从下方识别单张二维码图片`" @input="importError = ''; importMessage = ''" /></label>
+          <section class="team-code-qr-panel" :aria-labelledby="`plan-${field.key}-qr-title`">
+            <div><ScanQrCode :size="19" /><span><strong :id="`plan-${field.key}-qr-title`">从剪贴板或二维码图片导入</strong><small>支持 Ctrl+V / Cmd+V 粘贴御魂码或单张截图</small></span></div>
+            <div class="team-code-qr-actions">
+              <button type="button" :aria-label="`选择${field.label}二维码图片`" :disabled="importBusy !== null" @click="chooseQrImage(field.key)"><LoaderCircle v-if="importBusy === 'image' && qrTarget === field.key" class="spin" :size="15" /><ImageUp v-else :size="15" />选择二维码图片</button>
+              <button type="button" :aria-label="`读取${field.label}剪贴板`" :disabled="importBusy !== null" @click="recognizeCode(field.key, 'clipboard')"><LoaderCircle v-if="importBusy === 'clipboard' && qrTarget === field.key" class="spin" :size="15" /><ClipboardPaste v-else :size="15" />读取剪贴板</button>
+            </div>
+          </section>
+        </section>
+        <input ref="qrImageInput" type="file" accept="image/*" hidden :disabled="importBusy !== null" @change="readQrImage" />
+        <div v-if="importError || importMessage" class="target-import-feedback" :class="importError ? 'error' : importBusy ? 'loading' : 'success'" :role="importError ? 'alert' : 'status'">
+          <TriangleAlert v-if="importError" :size="16" /><LoaderCircle v-else-if="importBusy" class="spin" :size="16" /><Check v-else :size="16" /><span>{{ importError || importMessage }}</span>
+        </div>
+      </div>
+      <footer>
+        <button class="secondary" type="button" :disabled="importBusy !== null" @click="planFileInput?.click()"><FileJson :size="16" />导入方案 JSON</button>
+        <input ref="planFileInput" type="file" accept="application/json,.json" hidden :disabled="importBusy !== null" @change="importFile" />
+        <button class="primary" type="submit" :disabled="importBusy !== null || !importName.trim() || (!importCodes.discard.trim() && !importCodes.rescue.trim())"><LoaderCircle v-if="importBusy === 'decode'" class="spin" :size="16" /><Import v-else :size="16" />{{ importBusy === 'decode' ? '正在解码…' : '解码并导入' }}</button>
+      </footer>
+    </form>
   </div>
   <div v-if="renamePlan" class="modal-backdrop" @click.self="!renaming && (renamePlan = null)">
     <form class="import-dialog plan-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-plan-title" @submit.prevent="rename"><header><h2 id="rename-plan-title">重命名方案</h2><button class="icon-button" type="button" aria-label="关闭" :disabled="renaming" @click="renamePlan = null"><X :size="18" /></button></header><div class="plan-import-form"><label>方案名称<input v-model="renameName" required maxlength="80" :disabled="renaming" /></label><p v-if="renameError" class="inline-warning" role="alert">{{ renameError }}</p><button class="primary" type="submit" :disabled="renaming || !renameName.trim()">{{ renaming ? '正在保存…' : '保存' }}</button></div></form>
@@ -229,6 +297,8 @@ function exportPlan(plan: SavedPlan): void {
 .comparison-search { display: flex; gap: 8px; padding: 0 14px 12px; }.comparison-search input { min-width: 0; flex: 1; }.comparison-table { min-width: 970px; }.comparison-table td { white-space: nowrap; }.comparison-table .inventory-stat-list { min-width: 140px; }.difference-label { font-size: 11px; color: var(--muted); }.difference-label.extra-discard { color: var(--red); }.difference-label.extra-retain { color: var(--green); }
 .comparison-error { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
 .plan-import-dialog { width: min(660px, 100%); max-height: 90vh; overflow: auto; }.plan-rename-dialog { width: min(440px, 100%); }.plan-import-form { display: grid; gap: 16px; padding: 18px; }.plan-import-form label { display: grid; gap: 7px; font-size: 12px; font-weight: 600; }.plan-import-form textarea { width: 100%; padding: 10px; resize: vertical; }.plan-import-form button { justify-self: end; }
+.plan-import-dialog .target-code-entry input,.plan-import-dialog .target-code-entry textarea { width: 100%; min-width: 0; }.plan-import-dialog .target-import-feedback { font-size: 11px; }.plan-import-dialog .target-import-feedback.success { color: var(--green); background: var(--green-soft); border-color: #b9cfcd; }
+.plan-code-field { display: grid; gap: 8px; }.plan-code-field + .plan-code-field { padding-top: 12px; border-top: 1px solid var(--line); }
 @media (max-width: 1100px) { .plan-compare-layout { grid-template-columns: 1fr; }.plan-library-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 300px; }.saved-plan + .saved-plan { border-left: 1px solid var(--line); } }
 @media (max-width: 640px) { .plan-library-list { grid-template-columns: 1fr; }.comparison-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }.comparison-selectors { gap: 7px; }.comparison-toolbar { align-items: flex-start; flex-direction: column; } }
 </style>

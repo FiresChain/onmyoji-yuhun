@@ -89,6 +89,7 @@ import { decodeTeamCode, decodeYuhunCode, encodeYuhunDraft } from "./onmyoji-api
 import { loadYuhunUserId, normalizeYuhunUserId, saveYuhunUserId } from "./user-id.js";
 import { criteriaFromPlan, criteriaFromShare, exportPlanFile, normalizePlanCode, parsePlanFile, planName, type SavedPlan } from "./plan-library.js";
 import { downloadYuhunCodeQr, yuhunCodeQrDataUrl } from "./yuhun-code-qr-export.js";
+import { restoreEquippedYuhunDetails } from "./team-calculation-details.js";
 
 export interface ImportedTeamTarget {
   readonly id: string;
@@ -891,7 +892,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       // Inventory rows are derived from the restored snapshot. Re-querying also
       // upgrades sessions saved before rows included displayed stat values.
       inventory.value = await client.queryInventory({ page: 1, pageSize: 25 });
-      teamCalculations.value = stored.session.teamCalculations;
+      teamCalculations.value = await restoreEquippedYuhunDetails(stored.session.teamCalculations, ids => client.queryYuhunDetails(ids));
       teamCalculationProgress.value = stored.session.teamCalculationProgress === undefined
         ? {}
         : JSON.parse(JSON.stringify(stored.session.teamCalculationProgress)) as Record<string, TeamCalculationProgressState>;

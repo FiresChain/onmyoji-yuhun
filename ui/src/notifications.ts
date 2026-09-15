@@ -18,6 +18,15 @@ export interface ReleaseNotification {
 
 // Add new releases at the beginning with a new, stable version identifier.
 export const RELEASE_NOTIFICATIONS: readonly ReleaseNotification[] = [{
+  version: "2026.09.16.1",
+  date: "2026-09-16",
+  title: "方案导入与计算详情更新",
+  changes: [
+    "方案导入支持分别识别弃置码、强化码二维码及读取剪贴板。",
+    "修复恢复旧计算结果时御魂属性详情缺失。",
+    "移除侧栏底部状态提示。"
+  ]
+}, {
   version: "2026.09.11.1",
   date: "2026-09-11",
   title: "方案比对与设置更新",

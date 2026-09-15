@@ -227,11 +227,6 @@ async function run(action: () => void | Promise<void>): Promise<void> {
           <span>{{ step.label }}</span>
         </RouterLink>
       </nav>
-      <div class="sidebar-foot">
-        <div><span class="status-dot gold"></span>技术默认草案</div>
-        <div><span class="status-dot green"></span>验证通过</div>
-        <div><span class="status-dot red"></span>阻塞项</div>
-      </div>
     </aside>
 
     <main class="workspace">

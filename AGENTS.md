@@ -113,6 +113,10 @@ This is the main configuration surface.
 - Expanded calculation results show each configured shikigami's selected suit,
   score, target-score pass/fail state, panel attributes, pieces, and failure
   reason. Calculation errors can be copied.
+- Restoring a verified snapshot fills missing equipped-yuhun stats in legacy
+  calculation reports. Reports predating per-piece IDs use the preserved
+  entity/piece reservation order after validating the complete mapping against
+  the snapshot. This upgrades display data without recalculating lineups.
 
 #### Add / Inspect / Edit a Team Target
 
@@ -241,7 +245,13 @@ This is the main configuration surface.
 ### 5. Plan Comparison (`ui/src/views/compare.vue`)
 
 - Manages named plans: save from Codes, import a D/E pair or exported JSON,
-  inspect codes, rename, export, and delete after confirmation. Imports decode
+  inspect codes, rename, export, and delete after confirmation. The import
+  dialog has one Yuhun-code tab with separate discard-code and enhancement-code
+  fields. Each supports text, single QR image selection, clipboard reading, and
+  pasted screenshots, matching the Targets code importer. Image recognition
+  fills only the selected field; explicit submission saves both codes together
+  as one plan. E is used for rescue during comparison. JSON imports remain
+  available in the same dialog. Imports decode
   the codes through the existing API, validate kind/warnings and matching D/E
   IDs, and derive criteria from the decoded result, never from imported JSON.
 - Plans live in the `plans` object store of IndexedDB version 3, independently
