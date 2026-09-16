@@ -9,12 +9,11 @@ import ExcelColumnFilter, { type ExcelFilterOption, type ExcelFilterValue } from
 import { STAT_LABELS, type StatId, type YuhunDecisionRowDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
 import PotentialComparison from "../components/PotentialComparison.vue";
 import { useWorkbenchStore } from "../store.js";
+import { formatStatValue as formatStat } from "../number-format.js";
 
 const store = useWorkbenchStore();
 function formatStatValue(stat: StatId, value: number | undefined): string {
-  if (value === undefined) return "—";
-  const percent = ["attackPercent", "defensePercent", "hpPercent", "crit", "critDamage", "effectHit", "effectResist"].includes(stat);
-  return `+${(percent ? value * 100 : value).toFixed(2).replace(/\.?0+$/, "")}${percent ? "%" : ""}`;
+  return formatStat(stat, value, store.displayDecimalPlaces);
 }
 const potentialComparisonTargets = ref<readonly YuhunPotentialTarget[] | null>(null);
 const potentialComparisonTitle = ref("");

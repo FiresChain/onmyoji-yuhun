@@ -17,6 +17,7 @@ import { inspectPerformanceDevice, runPerformanceBenchmark } from "./hardware-be
 import { parseSceneDataExport } from "./persistence.js";
 import type { TelemetryKind } from "./telemetry.js";
 import NotificationCenter from "./components/NotificationCenter.vue";
+import { formatNumber, MAX_DISPLAY_DECIMAL_PLACES } from "./number-format.js";
 
 const route = useRoute();
 const store = useWorkbenchStore();
@@ -74,6 +75,12 @@ async function confirmClearSession(): Promise<void> {
   }
 }
 
+function updateDisplayDecimalPlaces(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  store.setDisplayDecimalPlaces(input.valueAsNumber);
+  input.value = String(store.displayDecimalPlaces);
+}
+
 function updateTeamCalculationResourceProfile(value: string): void {
   if (!CALCULATION_RESOURCE_PROFILES.some((profile) => profile.id === value)) return;
   const profile = value as CalculationResourceProfile;
@@ -103,9 +110,13 @@ const operationLabels = {
   simulation: "验证模拟"
 } as const;
 
+function numberLabel(value: number | null | undefined): string {
+  return formatNumber(value, store.displayDecimalPlaces);
+}
+
 function formatMs(value: number): string {
-  if (value < 1000) return `${value.toFixed(0)} ms`;
-  return `${(value / 1000).toFixed(2)} s`;
+  if (value < 1000) return `${numberLabel(value)} ms`;
+  return `${numberLabel(value / 1000)} s`;
 }
 
 function formatCount(value: number | null): string {
@@ -151,8 +162,8 @@ function resourceAllocationLabel(entry: PerformanceRecord): string | null {
   const label = CALCULATION_RESOURCE_PROFILES.find((profile) => profile.id === allocation.profile)?.label ?? allocation.profile;
   const estimate = allocation.estimatedCapacityRatio === null
     ? ""
-    : ` · 预计 ${(allocation.estimatedCapacityRatio * 100).toFixed(0)}%`;
-  return `资源 ${label} · 目标 ${(allocation.targetCapacityRatio * 100).toFixed(0)}%${estimate}`;
+    : ` · 预计 ${numberLabel(allocation.estimatedCapacityRatio * 100)}%`;
+  return `资源 ${label} · 目标 ${numberLabel(allocation.targetCapacityRatio * 100)}%${estimate}`;
 }
 
 function comparisonLabel(index: number, entry: PerformanceRecord): string | null {
@@ -182,7 +193,7 @@ function comparisonLabel(index: number, entry: PerformanceRecord): string | null
   if (!sameQuality) return "与上一同类记录的结果质量不同，不直接比较耗时";
   const improvement = (previous.elapsedMs - entry.elapsedMs) / previous.elapsedMs * 100;
   if (Math.abs(improvement) < 0.1) return "较上一同类记录基本持平";
-  return `较上一同类记录${improvement > 0 ? "快" : "慢"} ${Math.abs(improvement).toFixed(1)}%`;
+  return `较上一同类记录${improvement > 0 ? "快" : "慢"} ${numberLabel(Math.abs(improvement))}%`;
 }
 
 onMounted(() => {
@@ -260,28 +271,30 @@ async function run(action: () => void | Promise<void>): Promise<void> {
           <div class="performance-dialog-body diagnostics-content">
           <section v-if="diagnosticsSection === 'device'" class="diagnostics-section">
             <header><div><span class="eyebrow">DEVICE</span><h3>基础信息</h3></div><button class="primary" :disabled="benchmarkRunning" @click="run(runPerformanceTest)"><Gauge :size="15" />{{ benchmarkRunning ? '正在测试…' : '性能测试' }}</button></header>
-            <dl class="device-information">
-              <div><dt>系统平台</dt><dd>{{ deviceInfo.platform ?? '浏览器未提供' }}</dd></div>
-              <div><dt>浏览器</dt><dd>{{ deviceInfo.browserName === null ? '浏览器未识别' : `${deviceInfo.browserName} ${deviceInfo.browserMajorVersion ?? ''}` }}</dd></div>
-              <div><dt>CPU</dt><dd>{{ deviceInfo.logicalCores === null ? '型号不可读取' : `${deviceInfo.logicalCores} 个逻辑核心（浏览器不提供型号）` }}</dd></div>
-              <div><dt>内存</dt><dd>{{ deviceInfo.memoryGiB === null ? '浏览器未提供' : `${deviceInfo.memoryGiB} GiB` }}</dd></div>
-              <div><dt>GPU</dt><dd>{{ deviceInfo.gpuAdapter ?? (deviceInfo.webGpu ? 'WebGPU 可用，型号不可读取' : '浏览器未提供') }}</dd></div>
-              <div><dt>WebGPU 限制</dt><dd>{{ deviceInfo.gpuMaxBufferSize === null ? '浏览器未提供' : `缓冲区 ${Math.round(deviceInfo.gpuMaxBufferSize / 1024 / 1024)} MiB · 工作组 ${deviceInfo.gpuMaxComputeInvocationsPerWorkgroup ?? '-'} / ${deviceInfo.gpuMaxComputeWorkgroupsPerDimension ?? '-'}` }}</dd></div>
-              <div><dt>运行环境</dt><dd>WASM {{ deviceInfo.wasm ? '可用' : '不可用' }} · {{ deviceInfo.crossOriginIsolated ? '跨源隔离' : '普通环境' }}</dd></div>
-              <div><dt>CPU 单核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuSingle.evaluationsPerSecond.toLocaleString()} 组合/秒` }}</dd></div>
-              <div><dt>CPU 多核</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · ${benchmark.cpuMultiWorkerCount} Worker` }}</dd></div>
-              <div><dt>CPU 并行倍率</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.cpuParallelSpeedup.toFixed(2)}×` }}</dd></div>
-              <div><dt>阵容计算资源</dt><dd><select :value="store.teamCalculationResourceProfile" :disabled="store.busy !== null" aria-label="阵容计算资源档位" @change="updateTeamCalculationResourceProfile(($event.target as HTMLSelectElement).value)"><option v-for="profile in CALCULATION_RESOURCE_PROFILES" :key="profile.id" :value="profile.id">{{ profile.label }}</option></select></dd></div>
-              <div><dt>性能诊断</dt><dd><label class="switch"><input type="checkbox" :checked="store.teamCalculationSchedulerDebugEnabled" :disabled="store.busy !== null" aria-label="记录性能诊断" @change="updateTeamCalculationSchedulerDebugEnabled(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ store.teamCalculationSchedulerDebugEnabled ? '开启' : '关闭' }}</b></label></dd></div>
-              <div v-if="store.teamCalculationResourceProfile === 'custom'"><dt>自定义 Worker</dt><dd><input :value="store.customTeamCalculationWorkerCount ?? 1" :disabled="store.busy !== null" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="自定义阵容计算 Worker 数" @change="updateCustomTeamCalculationWorkerCount(($event.target as HTMLInputElement).value)" /></dd></div>
-              <div><dt>内存吞吐</dt><dd>{{ benchmark === null ? '尚未测试' : `${benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒` }}</dd></div>
-              <div><dt>GPU 计算</dt><dd>{{ benchmark === null ? '尚未测试' : benchmark.gpu.status === 'completed' ? `${benchmark.gpu.iterationsPerSecond?.toLocaleString()} f32 迭代/秒` : `${benchmark.gpu.status} · ${benchmark.gpu.reason ?? '无详情'}` }}</dd></div>
-              <div><dt>GPU 传输</dt><dd>{{ benchmark?.gpu.status !== 'completed' ? '尚无数据' : `上传 ${benchmark.gpu.uploadMebibytesPerSecond?.toLocaleString() ?? '-'} · 回读 ${benchmark.gpu.readbackMebibytesPerSecond?.toLocaleString() ?? '-'} MiB/秒` }}</dd></div>
-              <div><dt>GPU 初始化</dt><dd>{{ benchmark?.gpu.initializationMs == null ? '尚无数据' : formatMs(benchmark.gpu.initializationMs) }}</dd></div>
-              <div><dt>测试总耗时</dt><dd>{{ benchmark === null ? '尚未测试' : formatMs(benchmark.totalDurationMs) }}</dd></div>
-              <div><dt>基准版本</dt><dd>{{ benchmark === null ? 'onmyoji-hardware-profile-v1' : `${benchmark.id} · ${formatRecordedAt(benchmark.measuredAt)}` }}</dd></div>
-            </dl>
-            <p class="performance-notice">真实计算开始前会自动刷新超过 24 小时的画像；一次测试依次测量御魂搜索 1 至 N Worker 的吞吐曲线、内存与 WebGPU。阵容计算按所选档位从曲线中选择并发数，结果保存在本机并附加到之后的计算记录。</p>
+            <div class="device-settings">
+              <div class="device-setting"><label for="display-decimal-places">显示小数位数</label><input id="display-decimal-places" :value="store.displayDecimalPlaces" type="number" min="0" :max="MAX_DISPLAY_DECIMAL_PLACES" step="1" inputmode="numeric" @change="updateDisplayDecimalPlaces" /></div>
+              <div class="device-setting"><label for="calculation-resource-profile">阵容计算资源</label><select id="calculation-resource-profile" :value="store.teamCalculationResourceProfile" :disabled="store.busy !== null" @change="updateTeamCalculationResourceProfile(($event.target as HTMLSelectElement).value)"><option v-for="profile in CALCULATION_RESOURCE_PROFILES" :key="profile.id" :value="profile.id">{{ profile.label }}</option></select></div>
+              <div v-if="store.teamCalculationResourceProfile === 'custom'" class="device-setting"><label for="calculation-worker-count">自定义 Worker</label><input id="calculation-worker-count" :value="store.customTeamCalculationWorkerCount ?? 1" :disabled="store.busy !== null" type="number" min="1" max="64" step="1" inputmode="numeric" @change="updateCustomTeamCalculationWorkerCount(($event.target as HTMLInputElement).value)" /></div>
+              <div class="device-setting"><label for="calculation-diagnostics">性能诊断</label><label class="switch"><input id="calculation-diagnostics" type="checkbox" :checked="store.teamCalculationSchedulerDebugEnabled" :disabled="store.busy !== null" aria-label="记录性能诊断" @change="updateTeamCalculationSchedulerDebugEnabled(($event.target as HTMLInputElement).checked)" /><span></span><b>{{ store.teamCalculationSchedulerDebugEnabled ? '开启' : '关闭' }}</b></label></div>
+            </div>
+            <table class="device-information" aria-label="设备与性能信息"><tbody>
+              <tr><th scope="row">系统平台</th><td>{{ deviceInfo.platform ?? '浏览器未提供' }}</td></tr>
+              <tr><th scope="row">浏览器</th><td>{{ deviceInfo.browserName === null ? '浏览器未识别' : `${deviceInfo.browserName} ${deviceInfo.browserMajorVersion ?? ''}` }}</td></tr>
+              <tr><th scope="row">CPU</th><td>{{ deviceInfo.logicalCores === null ? '型号不可读取' : `${deviceInfo.logicalCores} 个逻辑核心（浏览器不提供型号）` }}</td></tr>
+              <tr><th scope="row">内存</th><td>{{ deviceInfo.memoryGiB === null ? '浏览器未提供' : `${numberLabel(deviceInfo.memoryGiB)} GiB` }}</td></tr>
+              <tr><th scope="row">GPU</th><td>{{ deviceInfo.gpuAdapter ?? (deviceInfo.webGpu ? 'WebGPU 可用，型号不可读取' : '浏览器未提供') }}</td></tr>
+              <tr><th scope="row">WebGPU 限制</th><td>{{ deviceInfo.gpuMaxBufferSize === null ? '浏览器未提供' : `缓冲区 ${numberLabel(deviceInfo.gpuMaxBufferSize / 1024 / 1024)} MiB · 工作组 ${deviceInfo.gpuMaxComputeInvocationsPerWorkgroup ?? '-'} / ${deviceInfo.gpuMaxComputeWorkgroupsPerDimension ?? '-'}` }}</td></tr>
+              <tr><th scope="row">运行环境</th><td>WASM {{ deviceInfo.wasm ? '可用' : '不可用' }} · {{ deviceInfo.crossOriginIsolated ? '跨源隔离' : '普通环境' }}</td></tr>
+              <tr><th scope="row">CPU 单核</th><td>{{ benchmark === null ? '尚未测试' : `${numberLabel(benchmark.cpuSingle.evaluationsPerSecond)} 组合/秒` }}</td></tr>
+              <tr><th scope="row">CPU 多核</th><td>{{ benchmark === null ? '尚未测试' : `${numberLabel(benchmark.cpuMulti.evaluationsPerSecond)} 组合/秒 · ${benchmark.cpuMultiWorkerCount} Worker` }}</td></tr>
+              <tr><th scope="row">CPU 并行倍率</th><td>{{ benchmark === null ? '尚未测试' : `${numberLabel(benchmark.cpuParallelSpeedup)}×` }}</td></tr>
+              <tr><th scope="row">内存吞吐</th><td>{{ benchmark === null ? '尚未测试' : `${numberLabel(benchmark.memory.mebibytesPerSecond)} MiB/秒` }}</td></tr>
+              <tr><th scope="row">GPU 计算</th><td>{{ benchmark === null ? '尚未测试' : benchmark.gpu.status === 'completed' ? `${numberLabel(benchmark.gpu.iterationsPerSecond)} f32 迭代/秒` : `${benchmark.gpu.status} · ${benchmark.gpu.reason ?? '无详情'}` }}</td></tr>
+              <tr><th scope="row">GPU 传输</th><td>{{ benchmark?.gpu.status !== 'completed' ? '尚无数据' : `上传 ${numberLabel(benchmark.gpu.uploadMebibytesPerSecond)} · 回读 ${numberLabel(benchmark.gpu.readbackMebibytesPerSecond)} MiB/秒` }}</td></tr>
+              <tr><th scope="row">GPU 初始化</th><td>{{ benchmark?.gpu.initializationMs == null ? '尚无数据' : formatMs(benchmark.gpu.initializationMs) }}</td></tr>
+              <tr><th scope="row">测试总耗时</th><td>{{ benchmark === null ? '尚未测试' : formatMs(benchmark.totalDurationMs) }}</td></tr>
+              <tr><th scope="row">基准版本</th><td>{{ benchmark === null ? 'onmyoji-hardware-profile-v1' : `${benchmark.id} · ${formatRecordedAt(benchmark.measuredAt)}` }}</td></tr>
+            </tbody></table>
           </section>
           <section v-else-if="diagnosticsSection === 'performance'" class="diagnostics-section">
             <header><div><span class="eyebrow">PERFORMANCE</span><h3>计算性能记录</h3></div><span>最近 20 条</span></header>
@@ -308,7 +321,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
               <div class="performance-stages">
                 <span v-for="stage in entry.stages" :key="stage.name">{{ stage.name }} <b>{{ formatMs(stage.elapsedMs) }}</b></span>
               </div>
-              <div class="performance-comparison">算法 {{ entry.algorithm.id }} · {{ entry.algorithm.runtime }} · 调度 {{ entry.scheduler.id }} / {{ entry.scheduler.mode }} · Worker {{ entry.scheduler.workerCount }}<template v-if="resourceAllocationLabel(entry)"> · {{ resourceAllocationLabel(entry) }}</template> · 剪枝 {{ entry.pruningRate === null ? "-" : `${(entry.pruningRate * 100).toFixed(1)}%` }} · 搜索吞吐 {{ entry.evaluatedPerSecond === null ? "-" : `${Math.round(entry.evaluatedPerSecond).toLocaleString()}/s` }} · 端到端吞吐 {{ entry.endToEndEvaluatedPerSecond === null ? "-" : `${Math.round(entry.endToEndEvaluatedPerSecond).toLocaleString()}/s` }} · 精确 {{ entry.exactCount }} / 近似 {{ entry.approximateCount }}</div>
+              <div class="performance-comparison">算法 {{ entry.algorithm.id }} · {{ entry.algorithm.runtime }} · 调度 {{ entry.scheduler.id }} / {{ entry.scheduler.mode }} · Worker {{ entry.scheduler.workerCount }}<template v-if="resourceAllocationLabel(entry)"> · {{ resourceAllocationLabel(entry) }}</template> · 剪枝 {{ entry.pruningRate === null ? "-" : `${numberLabel(entry.pruningRate * 100)}%` }} · 搜索吞吐 {{ entry.evaluatedPerSecond === null ? "-" : `${numberLabel(entry.evaluatedPerSecond)}/s` }} · 端到端吞吐 {{ entry.endToEndEvaluatedPerSecond === null ? "-" : `${numberLabel(entry.endToEndEvaluatedPerSecond)}/s` }} · 精确 {{ entry.exactCount }} / 近似 {{ entry.approximateCount }}</div>
               <div class="performance-parameters">参数：{{ formatAlgorithmParameters(entry) }}</div>
               <details v-if="entry.analysisDiagnostics" class="performance-targets">
                 <summary>查看分析诊断</summary>
@@ -333,8 +346,8 @@ async function run(action: () => void | Promise<void>): Promise<void> {
                   <span>目标 {{ target.index }}</span><span>{{ formatMs(target.elapsedMs) }}</span><span>评估 {{ target.evaluatedCombinations.toLocaleString() }}</span><span>{{ formatTargetStages(target) }}</span>
                 </div>
               </details>
-              <div class="performance-device">环境：{{ entry.device.platform ?? "未知平台" }} · {{ entry.device.browserName ?? "未知浏览器" }} {{ entry.device.browserMajorVersion ?? "" }} · {{ entry.device.logicalCores === null ? "核心数未知" : `${entry.device.logicalCores} 逻辑核心` }} · {{ entry.device.memoryGiB === null ? "内存未知" : `${entry.device.memoryGiB} GiB` }} · WASM {{ entry.device.wasm ? "可用" : "不可用" }} · WebGPU {{ entry.device.webGpu ? (entry.device.gpuAdapter ?? "可用") : "不可用" }}</div>
-              <div class="performance-device">基准：{{ entry.benchmark === null ? "记录时未测试" : `${entry.benchmark.id} · CPU ${entry.benchmark.cpuSingle.evaluationsPerSecond.toLocaleString()} / ${entry.benchmark.cpuMulti.evaluationsPerSecond.toLocaleString()} 组合/秒 · 内存 ${entry.benchmark.memory.mebibytesPerSecond.toLocaleString()} MiB/秒 · GPU ${entry.benchmark.gpu.iterationsPerSecond?.toLocaleString() ?? entry.benchmark.gpu.status}` }} · 目标耗时合计 {{ formatMs(entry.targetElapsedMs) }} · 非目标阶段 {{ formatMs(entry.overheadMs) }}</div>
+              <div class="performance-device">环境：{{ entry.device.platform ?? "未知平台" }} · {{ entry.device.browserName ?? "未知浏览器" }} {{ entry.device.browserMajorVersion ?? "" }} · {{ entry.device.logicalCores === null ? "核心数未知" : `${entry.device.logicalCores} 逻辑核心` }} · {{ entry.device.memoryGiB === null ? "内存未知" : `${numberLabel(entry.device.memoryGiB)} GiB` }} · WASM {{ entry.device.wasm ? "可用" : "不可用" }} · WebGPU {{ entry.device.webGpu ? (entry.device.gpuAdapter ?? "可用") : "不可用" }}</div>
+              <div class="performance-device">基准：{{ entry.benchmark === null ? "记录时未测试" : `${entry.benchmark.id} · CPU ${numberLabel(entry.benchmark.cpuSingle.evaluationsPerSecond)} / ${numberLabel(entry.benchmark.cpuMulti.evaluationsPerSecond)} 组合/秒 · 内存 ${numberLabel(entry.benchmark.memory.mebibytesPerSecond)} MiB/秒 · GPU ${entry.benchmark.gpu.iterationsPerSecond == null ? entry.benchmark.gpu.status : numberLabel(entry.benchmark.gpu.iterationsPerSecond)}` }} · 目标耗时合计 {{ formatMs(entry.targetElapsedMs) }} · 非目标阶段 {{ formatMs(entry.overheadMs) }}</div>
             </article>
             </template>
           </section>

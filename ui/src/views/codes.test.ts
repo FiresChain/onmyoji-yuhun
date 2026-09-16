@@ -46,7 +46,7 @@ describe("generated rule inspection", () => {
     expect(wrapper.find('[aria-labelledby="preview-rule-title"]').exists()).toBe(false);
     const hits = wrapper.find('[aria-labelledby="preview-hits-title"]');
     expect(hits.text()).toContain("招财猫");
-    expect(hits.text()).toContain("+3%");
+    expect(hits.text()).toContain("+3.00%");
     expect(wrapper.find('button[title="复制弃置码"]').attributes('disabled')).toBeDefined();
     wrapper.unmount();
   });

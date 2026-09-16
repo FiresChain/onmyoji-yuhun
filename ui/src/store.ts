@@ -90,6 +90,7 @@ import { loadYuhunUserId, normalizeYuhunUserId, saveYuhunUserId } from "./user-i
 import { criteriaFromPlan, criteriaFromShare, exportPlanFile, normalizePlanCode, parsePlanFile, planName, type SavedPlan } from "./plan-library.js";
 import { downloadYuhunCodeQr, yuhunCodeQrDataUrl } from "./yuhun-code-qr-export.js";
 import { restoreEquippedYuhunDetails } from "./team-calculation-details.js";
+import { formatNumber, loadDisplayDecimalPlaces, normalizeDisplayDecimalPlaces, saveDisplayDecimalPlaces } from "./number-format.js";
 
 export interface ImportedTeamTarget {
   readonly id: string;
@@ -237,6 +238,7 @@ function messageFor(error: unknown): WorkflowErrorDTO {
 export const useWorkbenchStore = defineStore("workbench", () => {
   const client = new WorkflowClient();
   const performanceHistory = ref<readonly PerformanceRecord[]>(loadPerformanceHistory());
+  const displayDecimalPlaces = ref(loadDisplayDecimalPlaces());
   const teamCalculationResourceProfile = ref<CalculationResourceProfile>(loadCalculationResourceProfile());
   const customTeamCalculationWorkerCount = ref<number | null>(loadCustomWorkerCount());
   const teamCalculationSchedulerDebugEnabled = ref(loadSchedulerDebugEnabled());
@@ -421,6 +423,11 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       undefined,
       typeof customTeamCalculationWorkerCount.value === "number" ? customTeamCalculationWorkerCount.value : null
     );
+  }
+
+  function setDisplayDecimalPlaces(value: number): void {
+    displayDecimalPlaces.value = normalizeDisplayDecimalPlaces(value);
+    saveDisplayDecimalPlaces(displayDecimalPlaces.value);
   }
 
   function setTeamCalculationResourceProfile(profile: CalculationResourceProfile): void {
@@ -1136,8 +1143,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         })
       });
       notice.value = performanceReports.length > 0
-        ? `分析完成；已基于 ${performanceReports.length} 条已完成阵容的保存搭配生成御魂潜力，不会改写阵容计算结果（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，实际评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`
-        : `分析完成；规则命中与 baseline 决策已合并到单件御魂结果（耗时 ${Math.round(performanceRecord.elapsedMs)} ms）`;
+        ? `分析完成；已基于 ${performanceReports.length} 条已完成阵容的保存搭配生成御魂潜力，不会改写阵容计算结果（耗时 ${formatNumber(performanceRecord.elapsedMs, displayDecimalPlaces.value)} ms，实际评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`
+        : `分析完成；规则命中与 baseline 决策已合并到单件御魂结果（耗时 ${formatNumber(performanceRecord.elapsedMs, displayDecimalPlaces.value)} ms）`;
     } catch (reason) {
       fail(reason);
     } finally {
@@ -1382,7 +1389,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       const entities = teamCalculations.value.flatMap((report) => report.entities);
       const success = entities.filter((entity) => entity.status === "success").length;
       const approximate = entities.filter((entity) => entity.status === "success" && entity.exact === false).length;
-      notice.value = `完成 ${success} 个式神目标${approximate > 0 ? `，其中 ${approximate} 个为近似最优` : ""}；已按阵容顺序分配御魂（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`;
+      notice.value = `完成 ${success} 个式神目标${approximate > 0 ? `，其中 ${approximate} 个为近似最优` : ""}；已按阵容顺序分配御魂（耗时 ${formatNumber(performanceRecord.elapsedMs, displayDecimalPlaces.value)} ms，评估 ${performanceRecord.evaluatedCombinations.toLocaleString()} 组）`;
     } catch (reason) {
       if (generation !== teamCalculationGeneration) return;
       if (reason instanceof WorkflowClientPausedError) {
@@ -1884,7 +1891,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         algorithmParameters: { sampleSize: 100_000, seed: 1 },
         workerCount: 1
       });
-      notice.value = `Tier 0 完整证明与当前档位模拟已通过（耗时 ${Math.round(performanceRecord.elapsedMs)} ms，样本 ${performanceRecord.sampleSize?.toLocaleString() ?? "-"}）`;
+      notice.value = `Tier 0 完整证明与当前档位模拟已通过（耗时 ${formatNumber(performanceRecord.elapsedMs, displayDecimalPlaces.value)} ms，样本 ${performanceRecord.sampleSize?.toLocaleString() ?? "-"}）`;
     } catch (reason) {
       fail(reason);
     } finally {
@@ -2197,6 +2204,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan, simulation, checklist, mobileHandoff,
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
+    displayDecimalPlaces, setDisplayDecimalPlaces,
     performanceHistory, teamCalculationResourceProfile, customTeamCalculationWorkerCount, teamCalculationSchedulerDebugEnabled, teamCalculationSchedulerDebugLog,
     importSnapshot, loadInventory, queryYuhunDetails, queryPreviewYuhun, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     savedPlans, planLibraryBusy, planLibraryLoaded, comparisonBaseId, comparisonNextId, loadPlanLibrary, saveCurrentPlan, importSavedPlan, importSavedPlanFile, renameSavedPlan, removeSavedPlan, exportSavedPlan, compareSavedPlans,

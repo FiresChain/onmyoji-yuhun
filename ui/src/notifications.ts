@@ -18,6 +18,22 @@ export interface ReleaseNotification {
 
 // Add new releases at the beginning with a new, stable version identifier.
 export const RELEASE_NOTIFICATIONS: readonly ReleaseNotification[] = [{
+  version: "2026.09.16.3",
+  date: "2026-09-16",
+  title: "数值显示与基础设置更新",
+  changes: [
+    "属性、面板和评分默认显示两位小数，可在设置中调整显示位数。",
+    "基础信息优先展示小数位数、阵容计算资源与性能诊断，设备和性能数据改为表格。"
+  ]
+}, {
+  version: "2026.09.16.2",
+  date: "2026-09-16",
+  title: "双码规则合并更新",
+  changes: [
+    "方案生成支持安全规则合并与 D/E 联合优化，提高单组双码的清理覆盖。",
+    "优化后的方案继续按预期空位停止，并保护保留项和历史弃置。"
+  ]
+}, {
   version: "2026.09.16.1",
   date: "2026-09-16",
   title: "方案导入与计算详情更新",

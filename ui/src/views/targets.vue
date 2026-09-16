@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { formatNumber, formatStatValue } from "../number-format.js";
 import {
   Check,
   Calculator,
@@ -1398,12 +1399,13 @@ function deleteTargetDetail(): void {
 }
 
 function panelStatEntries(panel: Panel): Array<{ label: string; value: string }> {
-  const percent = (value: number): string => `${(value * 100).toFixed(1).replace(/\.0$/, "")}%`;
+  const number = (value: number): string => formatNumber(value, store.displayDecimalPlaces);
+  const percent = (value: number): string => `${number(value * 100)}%`;
   return [
-    { label: "攻击", value: panel.attack.toFixed(0) },
-    { label: "生命", value: panel.hp.toFixed(0) },
-    { label: "防御", value: panel.defense.toFixed(0) },
-    { label: "速度", value: panel.speed.toFixed(1).replace(/\.0$/, "") },
+    { label: "攻击", value: number(panel.attack) },
+    { label: "生命", value: number(panel.hp) },
+    { label: "防御", value: number(panel.defense) },
+    { label: "速度", value: number(panel.speed) },
     { label: "暴击", value: percent(panel.crit) },
     { label: "暴伤", value: percent(panel.critDamage) },
     { label: "命中", value: percent(panel.effectHit) },
@@ -1425,7 +1427,7 @@ const teamProgressPercent = computed(() => {
 });
 
 function calculationScore(entity: TeamCalculationEntityDTO): string {
-  return entity.score === null ? "-" : entity.score.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return formatNumber(entity.score, store.displayDecimalPlaces);
 }
 
 function entityTargetScore(entity: TeamCalculationEntityDTO): number | null {
@@ -1435,7 +1437,7 @@ function entityTargetScore(entity: TeamCalculationEntityDTO): number | null {
 
 function entityTargetScoreLabel(entity: TeamCalculationEntityDTO): string | null {
   const targetScore = entityTargetScore(entity);
-  return targetScore === null ? null : `目标评分 ${targetScore.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  return targetScore === null ? null : `目标评分 ${formatNumber(targetScore, store.displayDecimalPlaces)}`;
 }
 
 function entityMeetsTargetScore(entity: TeamCalculationEntityDTO): boolean {
@@ -1558,8 +1560,7 @@ function selectCalculationEntity(entity: TeamCalculationEntityDTO): void {
 }
 
 function pieceStatValue(stat: { readonly stat: StatId; readonly value: number }): string {
-  const percentStats: readonly StatId[] = ["attackPercent", "hpPercent", "defensePercent", "crit", "critDamage", "effectHit", "effectResist"];
-  return percentStats.includes(stat.stat) ? `${(stat.value * 100).toFixed(1).replace(/\.0$/, "")}%` : stat.value.toFixed(1).replace(/\.0$/, "");
+  return formatStatValue(stat.stat, stat.value, store.displayDecimalPlaces, false);
 }
 
 function potentialComparisonPiece(item: TeamCalculationPieceDTO | null): YuhunPotentialPieceDTO | null {

@@ -20,6 +20,7 @@ function run(items: YyxYuhun[], wanted: string[]) {
   assert.ok((plan.discardDraft?.groups.length ?? 0) <= 60);
   assert.ok((plan.rescueDraft?.groups.length ?? 0) <= 60);
   const preview = previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  assert.deepEqual(preview.incidentalRestoreIds, []);
   for (const id of preview.finalNewDiscardIds) {
     assert.ok(wanted.includes(id));
     const source = items.find(item => item.id === id)!;
@@ -36,14 +37,74 @@ test("speed main stat is eligible; locked, historical and upgraded pieces are ex
   const items = [item("a"), item("b", { lock: true }), item("c", { garbage: true }), item("d", { level: 15 }), item("e", { star: 5 })];
   assert.deepEqual(run(items, items.map(i => i.id)).preview.finalNewDiscardIds, ["a"]);
 });
-test("large decision tables use bounded rescue groups and never lose protection", () => {
+test("safe merging covers more than 60 exact buckets without needing rescue", () => {
   const items = YUHUN_TYPES.slice(0, 65).flatMap((name, index) => [item(`keep${index}`, { name }), item(`drop${index}`, { name, subStats: { attack: 20 } })]);
   const wanted = items.filter(i => i.id.startsWith("drop")).map(i => i.id);
   const { plan, preview } = run(items, wanted);
   assert.equal(preview.finalNewDiscardIds.length, 65);
   assert.equal(plan.discardDraft?.groups.length, 1);
-  assert.equal(plan.rescueDraft?.groups.length, 1);
+  assert.equal(plan.rescueDraft, null);
   assert.deepEqual(buildDecisionPlan(items, new Set(wanted), header), plan);
+});
+test("joint search expands D through E protection and respects historical discards", () => {
+  const keep = item("keep", { name: YUHUN_TYPES[0]! });
+  const targets = YUHUN_TYPES.slice(1, 66).map((name, i) => item(`drop${i}`, { name }));
+  const wanted = targets.map(item => item.id);
+  assert.equal(targets.length, 65);
+  const { plan, preview } = run([keep, ...targets], wanted);
+  assert.equal(preview.finalNewDiscardIds.length, 65);
+  assert.equal(preview.rescuedFromNewDiscardIds.length, 1);
+  assert.equal(plan.discardDraft?.groups.length, 1);
+  assert.equal(plan.rescueDraft?.groups.length, 1);
+
+  const mixed = run([keep, { ...keep, id: "indistinguishable-target" }, ...targets], [...wanted, "indistinguishable-target"]);
+  assert.equal(mixed.preview.finalNewDiscardIds.length, 65);
+  assert.equal(mixed.preview.rescuedFromNewDiscardIds.length, 2);
+
+  // E cannot distinguish this old discard from the retained normal item.
+  const blocked = run([keep, ...targets, { ...keep, id: "history", garbage: true }], wanted);
+  assert.equal(blocked.preview.finalNewDiscardIds.length, 60);
+  assert.equal(blocked.plan.rescueDraft, null);
+});
+test("boss intrinsic filters separate retained variants and still protect ordinary souls", () => {
+  const target = item("boss-drop", { name: "土蜘蛛", intrinsicStats: { crit: .08 } });
+  const keep = { ...target, id: "boss-keep", intrinsicStats: { defensePercent: .16 } };
+  const ordinary = item("ordinary-keep");
+  const { plan, preview } = run([target, keep, ordinary], [target.id]);
+  assert.deepEqual(preview.finalNewDiscardIds, [target.id]);
+  assert.deepEqual(plan.discardDraft?.groups[0]?.criteria?.intrinsicStats, ["crit"]);
+});
+test("generalized rules reach the net cleanup quota while preserving non-targets", () => {
+  const items = [
+    item("a", { subStats: { speed: 2, crit: .03 } }),
+    item("b", { subStats: { speed: 2, attack: 20 } }),
+    item("c", { subStats: { crit: .03, attack: 20 } }),
+    item("keep", { subStats: { effectHit: .04, effectResist: .04 } })
+  ];
+  const plan = buildDecisionPlan(items, new Set(["a", "b", "c"]), header, 3);
+  const preview = previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  assert.deepEqual(new Set(preview.finalNewDiscardIds), new Set(["a", "b", "c"]));
+  assert.ok((plan.discardDraft?.groups.length ?? 0) <= 2);
+});
+test("mixed inventories preserve every non-target and historical pool across deterministic runs", () => {
+  const stats = ["speed", "crit", "attack", "defense", "hp", "effectHit", "effectResist"] as const;
+  for (let seed = 1; seed <= 4; seed++) {
+    let state = seed;
+    const random = (limit: number) => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % limit; };
+    const items = Array.from({ length: 400 }, (_, i) => {
+      const subStats: YyxYuhun["subStats"] = {};
+      for (let j = 0, size = 2 + random(3); j < size; j++) subStats[stats[random(stats.length)]!] = 1;
+      return item(`${seed}-${i}`, {
+        name: YUHUN_TYPES[random(25)]!, position: 1 + random(6), subStats,
+        level: random(8) < 6 ? 0 : 1 + random(15), star: random(10) ? 6 : 5,
+        lock: random(10) === 0, garbage: random(8) === 0,
+        intrinsicStats: random(4) === 0 ? { crit: .08 } : {}
+      });
+    });
+    const wanted = items.filter(() => random(5) < 3).map(item => item.id);
+    const { plan } = run(items, wanted);
+    assert.deepEqual(buildDecisionPlan(items, new Set(wanted), header), plan);
+  }
 });
 test("empty inventory and all-retain produce no codes", () => {
   for (const items of [[], [item("a")]]) {

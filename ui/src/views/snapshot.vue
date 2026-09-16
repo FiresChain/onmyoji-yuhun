@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { FileJson, Filter, Upload } from "@lucide/vue";
-import { STAT_LABELS, type InventoryStatDTO, type StatId } from "../../../src/browser.js";
+import { STAT_LABELS, type InventoryStatDTO } from "../../../src/browser.js";
 import EChart from "../components/EChart.vue";
 import { yuhunDisplayName, yuhunImage } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
+import { formatStatValue as formatStat } from "../number-format.js";
 
 const store = useWorkbenchStore();
 const dragging = ref(false);
@@ -31,20 +32,8 @@ async function applyFilters(page = 1): Promise<void> {
   });
 }
 
-const percentageStats = new Set<StatId>([
-  "attackPercent",
-  "defensePercent",
-  "hpPercent",
-  "crit",
-  "critDamage",
-  "effectHit",
-  "effectResist"
-]);
-
 function formatStatValue({ stat, value }: InventoryStatDTO): string {
-  const displayed = percentageStats.has(stat) ? value * 100 : value;
-  const rounded = displayed.toFixed(2).replace(/\.?0+$/, "");
-  return `${displayed >= 0 ? "+" : ""}${rounded}${percentageStats.has(stat) ? "%" : ""}`;
+  return formatStat(stat, value, store.displayDecimalPlaces);
 }
 </script>
 

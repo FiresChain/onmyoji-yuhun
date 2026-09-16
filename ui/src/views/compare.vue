@@ -6,6 +6,7 @@ import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunDisplayName, yuhunImage } from "../manual-target-config.js";
 import type { SavedPlan } from "../plan-library.js";
 import { useWorkbenchStore } from "../store.js";
+import { formatStatValue as formatStat } from "../number-format.js";
 import { decodeYuhunCodeFromQrImage, readYuhunCodeFromClipboard } from "../team-code-qr.js";
 import { emptyYuhunFilter } from "../yuhun-filter.js";
 
@@ -72,8 +73,7 @@ function applyFilter(): void {
   filterOpen.value = false;
 }
 function formatStatValue(stat: StatId, value: number): string {
-  const percent = ["attackPercent", "defensePercent", "hpPercent", "crit", "critDamage", "effectHit", "effectResist"].includes(stat);
-  return `+${Number((value * (percent ? 100 : 1)).toFixed(2))}${percent ? "%" : ""}`;
+  return formatStat(stat, value, store.displayDecimalPlaces);
 }
 function dateLabel(date: string): string { return new Date(date).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
 

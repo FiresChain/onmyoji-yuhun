@@ -46,7 +46,12 @@ Comparison requires a snapshot, but the plan library can be managed without one.
   Returning visitors see unread release notes once, and the bell retains access
   to read releases and the test warning. Session clearing preserves these flags.
 - Settings has four sections:
-  - **Device:** browser/device capabilities and a CPU/memory/WebGPU benchmark.
+  - **Device:** display decimal places (0-6, default 2), calculation resources,
+    and performance diagnostics first; browser/device capabilities and the
+    CPU/memory/WebGPU benchmark follow in a two-column table. Display precision
+    persists independently of the session and changes only number formatting.
+    Attributes, panels, scores, and continuous performance values share
+    `ui/src/number-format.ts`; counts and editable values retain their precision.
   - **Performance records:** the latest 20 timing, workload, algorithm,
     environment, benchmark, comparison, and per-target records. Older local
     histories are trimmed on load. Import/export/clear controls are hidden.
@@ -76,7 +81,7 @@ limited to the public asset/scene releases, codec endpoints, and the optional
   yuhun IDs are intentionally not displayed. The suit column uses the
   published yuhun icon when available (including legacy-name aliases).
 - Main and sub stats are rendered with Chinese labels and their displayed
-  values, such as `生命 +2052` or `暴击 +5.88%`. Boss yuhun intrinsic stats
+  values, such as `生命 +2,052.00` or `暴击 +5.88%`. Boss yuhun intrinsic stats
   are shown alongside the main stat. Stat names use a fixed column and values
   use a compact adjacent column so each row aligns without stretching across
   the full cell.
@@ -208,6 +213,14 @@ This is the main configuration surface.
   of E are documented in the internal research repository, not implemented as
   a multi-round execution UI. E is used to restore items from the discard pool,
   not to spend enhancement resources.
+- `src/filter-optimization.ts` generalizes exact rules against the current
+  inventory using the shared preview matcher. It compares exact and merged
+  pure-D coverage, then jointly expands D through safe E protection when the
+  quota remains unmet. Each code stays within 60 groups; selection counts only
+  newly covered targets. E cannot restore historical discards or separable
+  targets, and unused E rules are removed. Indistinguishable retain/discard
+  classes and normal +1/+2 items remain protected. The bounded search is a
+  current-snapshot heuristic, not a global optimum or future-inventory proof.
 - Generates and previews the D discard and E rescue codes directly after
   analysis. The frontend sends the ID saved in Settings to the encode API;
   without a saved ID, the API resolves its default. Local matching uses an

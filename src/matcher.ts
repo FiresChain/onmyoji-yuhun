@@ -86,9 +86,9 @@ function matchesLevel(level: number, selected: readonly LevelRange[]): boolean {
   });
 }
 
-function compileCriteria(
+export function compileFilterCriteria(
   criteria: FilterCriteria,
-  groupIndex: number
+  groupIndex = 0
 ): (item: YyxYuhun) => boolean {
   if (criteria.unknownTypeBits.length > 0 || criteria.unknownOptionBits.length > 0) {
     return fail("UNKNOWN_BITS", groupIndex, "unknown mask bits have no matching semantics");
@@ -160,7 +160,7 @@ export function matchFilterShare(
     inputIds.add(item.id);
   }
   const predicates = share.groups.map((group, groupIndex) =>
-    compileCriteria(group.criteria, groupIndex)
+    compileFilterCriteria(group.criteria, groupIndex)
   );
   const union = new Set<string>();
   const groups = share.groups.map((group, groupIndex): FilterGroupMatch => {

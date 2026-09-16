@@ -5,6 +5,7 @@ import { STAT_LABELS, type PlanSummaryDTO, type InventoryRowDTO, type PageDTO, t
 import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunImage, yuhunDisplayName } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
+import { formatStatValue } from "../number-format.js";
 
 const store = useWorkbenchStore();
 const saveOpen = ref(false);
@@ -77,10 +78,8 @@ function viewHits(group: PreviewGroup): void {
   hitSearch.value = "";
   void loadHits();
 }
-const percentageStats = new Set<StatId>(["attackPercent", "defensePercent", "hpPercent", "crit", "critDamage", "effectHit", "effectResist"]);
 function statValue(stat: StatId, value: number): string {
-  const percentage = percentageStats.has(stat);
-  return `+${Number((value * (percentage ? 100 : 1)).toFixed(2))}${percentage ? "%" : ""}`;
+  return formatStatValue(stat, value, store.displayDecimalPlaces);
 }
 </script>
 

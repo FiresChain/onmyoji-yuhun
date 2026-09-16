@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { X } from "@lucide/vue";
-import { STAT_LABELS, type YuhunPotentialPieceDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
+import { STAT_LABELS, type StatId, type YuhunPotentialPieceDTO, type YuhunPotentialTarget } from "../../../src/browser.js";
 import { shikigamiByHeroId, shikigamiImage, yuhunImage } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
+import { formatNumber, formatStatValue } from "../number-format.js";
 
 const props = withDefaults(defineProps<{ targets: readonly YuhunPotentialTarget[]; title?: string; compact?: boolean; referenceTitle?: string }>(), { compact: false });
 const emit = defineEmits<{ close: [] }>();
@@ -30,12 +31,8 @@ const leftItem = computed(() => selected.value === null ? null : selected.value.
 const rightItem = computed(() => selected.value === null ? null : selected.value.candidate);
 const leftTitle = computed(() => props.referenceTitle ?? "当前装配御魂");
 const rightTitle = computed(() => "候选御魂");
-const percentageStats = new Set(["attackPercent", "defensePercent", "hpPercent", "crit", "critDamage", "effectHit", "effectResist"]);
-
-function statValue(stat: string, value: number): string {
-  const percent = percentageStats.has(stat);
-  const display = percent ? value * 100 : value;
-  return `${display >= 0 ? "+" : ""}${display.toFixed(2).replace(/\.?0+$/, "")}${percent ? "%" : ""}`;
+function statValue(stat: StatId, value: number): string {
+  return formatStatValue(stat, value, store.displayDecimalPlaces);
 }
 
 function rowValue(item: YuhunPotentialPieceDTO | null, label: string): string {
@@ -103,9 +100,9 @@ function displayTeamLabel(target: YuhunPotentialTarget): string | null {
               </button>
               <div class="yuhun-wheel-center"><img v-if="shikigamiImage(entity.shikigamiId ?? 0)" :src="shikigamiImage(entity.shikigamiId ?? 0)!" :alt="memberName(entity)" /><strong>{{ memberName(entity) }}</strong></div>
             </div>
-            <div class="yuhun-build-summary"><span><small>{{ entity.metricName }}</small><strong>{{ entity.score?.toLocaleString() ?? '—' }}</strong></span><span><small>套装</small><strong>{{ [...new Set(entity.pieces.map(piece => piece.suit))].join(' + ') }}</strong></span></div>
+            <div class="yuhun-build-summary"><span><small>{{ entity.metricName }}</small><strong>{{ formatNumber(entity.score, store.displayDecimalPlaces) }}</strong></span><span><small>套装</small><strong>{{ [...new Set(entity.pieces.map(piece => piece.suit))].join(' + ') }}</strong></span></div>
           </section>
-          <div class="potential-comparison-meta"><span>{{ strategyLabel(selected) }}</span><span v-if="selected.upperScore !== null">候选评分 {{ selected.upperScore.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}</span><span v-if="selected.baselineScore !== null">参考评分 {{ selected.baselineScore.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}</span><span v-if="selected.comparisonNote">{{ selected.comparisonNote }}</span></div>
+          <div class="potential-comparison-meta"><span>{{ strategyLabel(selected) }}</span><span v-if="selected.upperScore !== null">候选评分 {{ formatNumber(selected.upperScore, store.displayDecimalPlaces) }}</span><span v-if="selected.baselineScore !== null">参考评分 {{ formatNumber(selected.baselineScore, store.displayDecimalPlaces) }}</span><span v-if="selected.comparisonNote">{{ selected.comparisonNote }}</span></div>
           <div v-if="leftItem || rightItem" class="potential-diff-grid">
             <article><h3>{{ leftTitle }}</h3><div v-for="row in comparisonRows" :key="row.label" class="potential-diff-row" :class="{ changed: different(leftItem, rightItem, row.label) }"><span>{{ row.label }}</span><strong>{{ rowValue(leftItem, row.label) }}</strong></div><p v-if="!leftItem">该证据没有对应的装配御魂明细。</p></article>
             <article><h3>{{ rightTitle }}</h3><div v-for="row in comparisonRows" :key="row.label" class="potential-diff-row" :class="{ changed: different(rightItem, leftItem, row.label) }"><span>{{ row.label }}</span><strong>{{ rowValue(rightItem, row.label) }}</strong></div><p v-if="!rightItem">旧报告未保存候选属性，请重新计算阵容。</p></article>
