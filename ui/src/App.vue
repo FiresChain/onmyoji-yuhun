@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "./components/ModalTransition.vue";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { Activity, Bell, Cpu, Database, DatabaseBackup, Gauge, KeyRound, Settings2, ShieldCheck, Trash2, Upload, X } from "@lucide/vue";
@@ -17,10 +18,14 @@ import { inspectPerformanceDevice, runPerformanceBenchmark } from "./hardware-be
 import { parseSceneDataExport } from "./persistence.js";
 import type { TelemetryKind } from "./telemetry.js";
 import NotificationCenter from "./components/NotificationCenter.vue";
+import ConfirmationDialog from "./components/ConfirmationDialog.vue";
 import { formatNumber, MAX_DISPLAY_DECIMAL_PLACES } from "./number-format.js";
 
 const route = useRoute();
 const store = useWorkbenchStore();
+const notificationButton = ref<HTMLElement | null>(null);
+const notificationClosing = ref(false);
+const confirmationClosing = ref(false);
 const activeIndex = computed(() => STEPS.findIndex((step) => step.id === route.name));
 const performanceOpen = ref(false);
 const diagnosticsSection = ref<"device" | "performance" | "collection" | "id">("device");
@@ -70,7 +75,7 @@ async function importUserId(): Promise<void> {
 }
 
 async function confirmClearSession(): Promise<void> {
-  if (window.confirm("确定清空内存和本机会话吗？导入的快照、关卡与阵容配置、计算结果和生成的方案都会清除，此操作无法撤销。")) {
+  if (await store.confirmAction("确定清空内存和本机会话吗？导入的快照、关卡与阵容配置、计算结果和生成的方案都会清除，此操作无法撤销。", "清空会话")) {
     await store.clearSession();
   }
 }
@@ -133,7 +138,7 @@ async function chooseSceneData(files: FileList | null): Promise<void> {
   if (sceneDataInput.value !== null) sceneDataInput.value.value = "";
   if (file === undefined) return;
   const payload = parseSceneDataExport(JSON.parse(await file.text()) as unknown);
-  const confirmed = window.confirm(
+  const confirmed = await store.confirmAction(
     `将用文件中的 ${payload.summary.sceneCount} 个关卡、${payload.summary.targetCount} 条阵容覆盖浏览器当前关卡数据，并清空旧分析结果。是否继续？`
   );
   if (confirmed) store.importSceneData(payload);
@@ -210,7 +215,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
 </script>
 
 <template>
-  <div class="app-shell" :inert="store.notificationDialog !== null">
+  <div class="app-shell" :inert="store.notificationDialog !== null || notificationClosing || store.confirmationRequest !== null || confirmationClosing">
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark"><ShieldCheck :size="19" /></span>
@@ -225,7 +230,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
         <button class="toolbar-command" title="导入全部关卡数据 JSON" :disabled="store.restoring" @click="sceneDataInput?.click()"><Upload :size="17" /><span>导入关卡</span></button>
         <button class="toolbar-command" title="导出全部关卡数据 JSON" :disabled="store.restoring" @click="run(store.exportSceneData)"><DatabaseBackup :size="17" /><span>导出关卡</span></button>
         <input ref="sceneDataInput" class="visually-hidden" type="file" accept="application/json,.json" @change="run(() => chooseSceneData(($event.target as HTMLInputElement).files))" />
-        <button class="icon-button notification-button" title="通知" :aria-label="store.unreadNotifications.length ? `通知，${store.unreadNotifications.length} 条未读` : '通知'" @click="store.openNotifications"><Bell :size="18" /><span v-if="store.unreadNotifications.length" class="notification-badge">{{ store.unreadNotifications.length }}</span></button>
+        <button ref="notificationButton" class="icon-button notification-button" title="通知" :aria-label="store.unreadNotifications.length ? `通知，${store.unreadNotifications.length} 条未读` : '通知'" @click="store.openNotifications"><Bell :size="18" /><span v-if="store.unreadNotifications.length" class="notification-badge">{{ store.unreadNotifications.length }}</span></button>
         <button class="icon-button" title="设置" aria-label="设置" @click="openPerformanceDialog"><Settings2 :size="18" /></button>
         <button class="icon-button danger" title="清空内存和本机会话" :disabled="store.restoring" @click="run(confirmClearSession)"><Trash2 :size="18" /></button>
       </div>
@@ -253,6 +258,7 @@ async function run(action: () => void | Promise<void>): Promise<void> {
       <RouterView />
     </main>
 
+    <ModalTransition>
     <div v-if="performanceOpen" class="performance-layer" role="presentation" @click.self="performanceOpen = false">
       <section class="performance-dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="performance-title">
         <header>
@@ -376,8 +382,10 @@ async function run(action: () => void | Promise<void>): Promise<void> {
         </div>
       </section>
     </div>
+    </ModalTransition>
   </div>
-  <NotificationCenter />
+  <NotificationCenter :trigger="notificationButton" @closing="notificationClosing = $event" />
+  <ConfirmationDialog @closing="confirmationClosing = $event" />
 </template>
 
 <style scoped>

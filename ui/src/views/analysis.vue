@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "../components/ModalTransition.vue";
 import { computed, ref } from "vue";
 import { FileJson, SlidersHorizontal, Filter, Play, RefreshCw, X } from "@lucide/vue";
 import { yuhunDisplayName, yuhunImage } from "../manual-target-config.js";
@@ -190,7 +191,10 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
       <div class="pagination"><button :disabled="(store.yuhunDecisions?.page ?? 1)<=1" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)-1)">上一页</button><span>{{ store.yuhunDecisions?.page ?? 1 }} / {{ Math.max(1,Math.ceil((store.yuhunDecisions?.total ?? 0)/30)) }}</span><button :disabled="(store.yuhunDecisions?.page ?? 1)*30 >= (store.yuhunDecisions?.total ?? 0)" @click.stop="filterYuhun((store.yuhunDecisions?.page ?? 1)+1)">下一页</button></div>
     </section>
   </template>
+  <ModalTransition>
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" @close="potentialComparisonTargets = null" />
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="inventoryFilterOpen" class="modal-backdrop" @click.self="inventoryFilterOpen = false" @keydown.esc="inventoryFilterOpen = false">
     <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="inventory-filter-title">
       <header><h2 id="inventory-filter-title">筛选御魂</h2><button class="icon-button" aria-label="关闭" @click="inventoryFilterOpen = false"><X :size="18" /></button></header>
@@ -200,6 +204,8 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
       <footer><button @click="resetInventoryFilter">重置</button><button class="primary" @click="applyInventoryFilter">应用</button></footer>
     </section>
   </div>
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="reasonDetail" class="modal-backdrop" @click.self="reasonDetail = null" @keydown.esc="reasonDetail = null">
     <section class="reason-dialog" role="dialog" aria-modal="true" aria-labelledby="reason-title" tabindex="-1">
       <header><h2 id="reason-title">{{ reasonDetail.tag }}</h2><button autofocus aria-label="关闭" @click="reasonDetail = null"><X :size="18" /></button></header>
@@ -223,6 +229,7 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
       </article>
     </section>
   </div>
+  </ModalTransition>
 </template>
 
 <style scoped>

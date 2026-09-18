@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "./ModalTransition.vue";
 import { computed, ref, watch } from "vue";
 import { Check, ChevronDown, Plus, Search, Trash2, UserRoundPlus, X } from "@lucide/vue";
 import type {
@@ -515,6 +516,7 @@ function removeLimit(id: number): void {
         <span>选中式神后设置御魂套装、指标、主属性和高级限制</span>
       </button>
 
+      <ModalTransition>
       <div v-if="shikigamiPickerOpen" class="selector-layer" @click.self="shikigamiPickerOpen = false">
         <section class="asset-selector shikigami-picker" role="dialog" aria-modal="true" aria-label="选择式神">
           <header><div><span>槽位 {{ activeSlot }}</span><h3>选择式神</h3></div><button title="关闭式神选择" @click="shikigamiPickerOpen = false"><X :size="18" /></button></header>
@@ -534,7 +536,9 @@ function removeLimit(id: number): void {
           <div v-if="visibleShikigami.length === 0" class="selector-no-result">没有匹配的式神</div>
         </section>
       </div>
+      </ModalTransition>
 
+      <ModalTransition>
       <div v-if="yuhunPickerOpen" class="selector-layer" @click.self="yuhunPickerOpen = false">
         <section class="asset-selector yuhun-picker" role="dialog" aria-modal="true" aria-label="选择御魂套装">
           <header><div><span>{{ activeSuitIndex === null ? "添加御魂套装" : "修改御魂套装" }}</span><h3>选择御魂套装</h3></div><button title="关闭御魂选择" @click="yuhunPickerOpen = false"><X :size="18" /></button></header>
@@ -560,6 +564,7 @@ function removeLimit(id: number): void {
           </div>
         </section>
       </div>
+      </ModalTransition>
     </fieldset>
 
   </section>

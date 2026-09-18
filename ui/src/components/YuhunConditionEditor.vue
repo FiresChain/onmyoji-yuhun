@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "./ModalTransition.vue";
 import { computed, ref } from "vue";
 import { Circle, Plus, X } from "@lucide/vue";
 import { STAT_LABELS, YUHUN_TYPES, type FilterCriteria, type StatId, type SubStatRequirement } from "../../../src/browser.js";
@@ -34,5 +35,7 @@ function subStat(stat: StatId, requirement: SubStatRequirement): void {
   <fieldset class="rule-field" :disabled="readonly || !hasBoss" data-testid="rule-intrinsic-field"><legend>固有属性（首领御魂）</legend><div class="option-grid"><label v-for="stat in intrinsic" :key="stat.value"><input type="checkbox" :checked="modelValue.intrinsicStats.includes(stat.value as FilterCriteria['intrinsicStats'][number])" @change="toggle('intrinsicStats', stat.value)" /><span>{{ stat.label }}</span></label></div></fieldset>
   <section class="rule-field"><strong>副属性</strong><div class="rule-sub-stat-grid"><div v-for="stat in stats" :key="stat.value" class="rule-sub-stat-option"><span>{{ stat.label }}</span><button v-for="requirement in (['include', 'exclude'] as const)" :key="requirement" type="button" :disabled="readonly" :class="{ selected: modelValue.subStats.some(entry => entry.stat === stat.value && entry.requirement === requirement) }" :aria-pressed="modelValue.subStats.some(entry => entry.stat === stat.value && entry.requirement === requirement)" :title="`${stat.label}：${requirement === 'include' ? '必须有' : '必须没有'}`" :aria-label="`${stat.label}：${requirement === 'include' ? '必须有' : '必须没有'}`" @click="subStat(stat.value, requirement)"><Circle v-if="requirement === 'include'" :size="14" /><X v-else :size="15" /></button></div></div></section>
   <RuleOptionGroup :readonly="readonly" label="副属性数量" :options="[{ value: 'lessThan2', label: '不足2条' }, ...['2', '3', '4'].map(value => ({ value, label: `${value}条` }))]" :selected="modelValue.subStatCounts" @toggle="toggle('subStatCounts', $event)" />
+  <ModalTransition>
   <YuhunSuitPicker v-if="pickerOpen && !readonly" :options="YUHUN_TYPES" :selected="modelValue.types" @change="setTypes" @close="pickerOpen = false" @apply="pickerOpen = false" />
+  </ModalTransition>
 </template>

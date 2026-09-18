@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "../components/ModalTransition.vue";
 import { computed, ref, watch } from "vue";
 import { Clipboard, Download, Play, Save, ShieldCheck, Eye, X, LoaderCircle, Search } from "@lucide/vue";
 import { STAT_LABELS, type PlanSummaryDTO, type InventoryRowDTO, type PageDTO, type StatId } from "../../../src/browser.js";
@@ -140,6 +141,7 @@ function statValue(stat: StatId, value: number): string {
     </div>
   </template>
   <div v-else class="empty-state"><ShieldCheck :size="32" /><strong>尚未生成双码</strong><span>完成账号分析后，即可生成并预演。</span></div>
+  <ModalTransition>
   <div v-if="saveOpen" class="modal-backdrop" @click.self="!saving && (saveOpen = false)" @keydown.esc="!saving && (saveOpen = false)">
     <form class="import-dialog save-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="save-plan-title" @submit.prevent="savePlan">
       <header><h2 id="save-plan-title">保存方案</h2><button type="button" class="icon-button" aria-label="关闭" :disabled="saving" @click="saveOpen = false"><X :size="18" /></button></header>
@@ -147,6 +149,8 @@ function statValue(stat: StatId, value: number): string {
       <footer><button type="button" :disabled="saving" @click="saveOpen = false">取消</button><button class="primary" type="submit" :disabled="saving || !saveName.trim()"><Save :size="16" />{{ saving ? '正在保存…' : '保存' }}</button></footer>
     </form>
   </div>
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="viewedRule" class="modal-backdrop" @click.self="viewedRule = null" @keydown.esc="viewedRule = null">
     <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-rule-title">
       <header><div><span class="eyebrow">PRESET RULE / {{ viewedRule.code }}</span><h2 id="preview-rule-title">查看{{ viewedRule.code === 'D' ? '弃置' : '捡回' }}规则</h2></div><button class="icon-button" title="关闭" @click="viewedRule = null"><X :size="18" /></button></header>
@@ -154,6 +158,8 @@ function statValue(stat: StatId, value: number): string {
       <footer class="icon-footer"><button class="icon-button" title="查看命中御魂" aria-label="查看命中御魂" @click="viewHits(viewedRule)"><Search :size="16" /></button></footer>
     </section>
   </div>
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="hitRule" class="modal-backdrop" @click.self="closeHits" @keydown.esc="closeHits">
     <section class="import-dialog hit-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-hits-title" :aria-busy="hitBusy">
       <header><div><span class="eyebrow">{{ hitRule.code }} / MATCHED YUHUN</span><h2 id="preview-hits-title">命中御魂 · {{ hitRule.name }}</h2></div><button class="icon-button" title="关闭" @click="closeHits"><X :size="18" /></button></header>
@@ -171,6 +177,7 @@ function statValue(stat: StatId, value: number): string {
 
     </section>
   </div>
+  </ModalTransition>
 
 </template>
 

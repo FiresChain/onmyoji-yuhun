@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "../components/ModalTransition.vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { formatNumber, formatStatValue } from "../number-format.js";
 import {
@@ -536,8 +537,8 @@ function toggleSmartTeamSelection(): void {
   smartHelpOpen.value = false;
 }
 
-function calculateVisibleTeamTargets(): void {
-  if (hasTeamCalculationRun.value && !window.confirm("重新计算会清空当前计算结果，并重新计算。已选择的关卡和阵容保持不变，是否继续？")) return;
+async function calculateVisibleTeamTargets(): Promise<void> {
+  if (hasTeamCalculationRun.value && !await store.confirmAction("重新计算会清空当前计算结果，并重新计算。已选择的关卡和阵容保持不变，是否继续？", "重新计算")) return;
   void store.calculateTeamTargets({
     mode: teamSelectionMode.value,
     sceneIds: selectedSceneIds.value,
@@ -2270,6 +2271,7 @@ function ruleSummary(rule: PresetRule): string {
     </div>
   </section>
 
+  <ModalTransition>
   <div v-if="importOpen" class="modal-backdrop" @click.self="importOpen = false" @keydown.esc="importOpen = false">
     <section class="import-dialog team-target-dialog" :class="{ 'manual-mode': importMode === 'manual' }" role="dialog" aria-modal="true" aria-labelledby="import-team-title">
       <header><div><span class="eyebrow">TEAM TARGET</span><h2 id="import-team-title">导入阵容目标</h2></div><button class="icon-button" title="关闭" @click="importOpen = false"><X :size="18" /></button></header>
@@ -2308,7 +2310,9 @@ function ruleSummary(rule: PresetRule): string {
       <footer v-else><span>已添加 {{ manualDrafts.length }} / 6 个式神 · {{ manualConfiguredCount }} 个参与御魂计算</span><button class="primary" :disabled="manualConfiguredCount === 0 || importSceneId === '' || (!importForceCalculate && !isValidDifficulty(importDifficulty))" @click="saveManualTarget"><Save :size="17" />保存并启用</button></footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div
     v-if="pendingTeamSceneMismatch"
     class="catalog-delete-overlay team-scene-mismatch-overlay"
@@ -2352,7 +2356,9 @@ function ruleSummary(rule: PresetRule): string {
       </footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div
     v-if="pendingTeamSceneIdAssignment"
     class="catalog-delete-overlay team-scene-mismatch-overlay"
@@ -2393,7 +2399,9 @@ function ruleSummary(rule: PresetRule): string {
       </footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div v-if="targetDetail" class="modal-backdrop" @click.self="closeTargetDetail" @keydown.esc="closeTargetDetail">
     <section class="import-dialog team-target-dialog manual-mode team-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="team-detail-title">
       <header>
@@ -2435,7 +2443,9 @@ function ruleSummary(rule: PresetRule): string {
       </footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div v-if="calculationDetailTarget && calculationDetailReport" class="modal-backdrop calculation-detail-backdrop" @click.self="closeCalculationDetail" @keydown.esc="closeCalculationDetail">
     <section class="calculation-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="calculation-detail-title">
       <header><div><span>YUHUN LOADOUT</span><h2 id="calculation-detail-title">{{ calculationDetailTarget.label }}</h2></div><button class="icon-button" title="关闭队伍详情" @click="closeCalculationDetail"><X :size="18" /></button></header>
@@ -2481,7 +2491,9 @@ function ruleSummary(rule: PresetRule): string {
       </div>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div
     v-if="pendingTeamTargetDelete"
     class="catalog-delete-overlay team-delete-overlay"
@@ -2515,7 +2527,9 @@ function ruleSummary(rule: PresetRule): string {
       </footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div v-if="catalogManagerOpen" class="modal-backdrop" @click.self="closeCatalogManager" @keydown.esc="closeCatalogManager">
     <section class="import-dialog catalog-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-manager-title">
       <header><div><span class="eyebrow">CATALOG MANAGER</span><h2 id="catalog-manager-title">阵容分类管理</h2></div><button class="icon-button" title="关闭" @click="closeCatalogManager"><X :size="18" /></button></header>
@@ -2620,6 +2634,7 @@ function ruleSummary(rule: PresetRule): string {
       <footer><span>R2 官方目录只读；本地新增分类和场景会自动保存</span><button class="primary" @click="closeCatalogManager">完成</button></footer>
     </section>
 
+    <ModalTransition>
     <div v-if="pendingCatalogDelete" class="catalog-delete-overlay" @click.self="pendingCatalogDelete = null" @keydown.esc.stop="pendingCatalogDelete = null">
       <section class="catalog-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="catalog-delete-title" aria-describedby="catalog-delete-description">
         <header><span><TriangleAlert :size="20" /></span><div><small>DELETE CATALOG</small><h2 id="catalog-delete-title">确认删除“{{ pendingCatalogDelete.label }}”</h2></div></header>
@@ -2635,8 +2650,11 @@ function ruleSummary(rule: PresetRule): string {
         <footer><button @click="pendingCatalogDelete = null">取消</button><button class="danger-command" data-testid="confirm-catalog-delete" @click="confirmCatalogDelete"><Trash2 :size="16" />确认删除</button></footer>
       </section>
     </div>
+    </ModalTransition>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div v-if="ruleCodeImportOpen" class="modal-backdrop" @click.self="!ruleImportBusy && (ruleCodeImportOpen = false)" @keydown.esc="!ruleImportBusy && (ruleCodeImportOpen = false)" @paste="handleRuleCodePaste">
     <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="rule-code-import-title" :aria-busy="ruleImportBusy !== null">
       <header><div><span class="eyebrow">PRESET RULE</span><h2 id="rule-code-import-title">导入规则配置</h2></div><button class="icon-button" title="关闭" :disabled="ruleImportBusy !== null" @click="ruleCodeImportOpen = false"><X :size="18" /></button></header>
@@ -2669,7 +2687,9 @@ function ruleSummary(rule: PresetRule): string {
       <footer v-else><span>保存后默认启用并进入{{ rulePool === 'discard' ? '弃置' : '强化' }}规则池</span><button class="primary" :disabled="ruleLabel.trim() === '' || !!store.busy" @click="saveRule"><Save :size="17" />保存并启用</button></footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <div v-if="ruleOpen" class="modal-backdrop" @click.self="ruleOpen = false" @keydown.esc="ruleOpen = false">
     <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="preset-rule-title">
       <header><div><span class="eyebrow">PRESET RULE</span><h2 id="preset-rule-title">{{ editingRuleId ? '编辑' : '添加' }}{{ rulePool === 'discard' ? '弃置' : '强化' }}规则</h2></div><button class="icon-button" title="关闭" @click="ruleOpen = false"><X :size="18" /></button></header>
@@ -2680,7 +2700,12 @@ function ruleSummary(rule: PresetRule): string {
       <footer><span>未选择御魂套装表示不限套装；保存后默认启用并进入{{ rulePool === 'discard' ? '弃置' : '强化' }}规则池</span><button class="primary" :disabled="ruleLabel.trim() === ''" @click="saveRule"><Save :size="17" />保存规则</button></footer>
     </section>
   </div>
+  </ModalTransition>
 
+  <ModalTransition>
   <YuhunSuitPicker v-if="ruleYuhunPickerOpen" :options="YUHUN_TYPES" :selected="ruleSuits" @change="ruleSuits = $event" @close="ruleYuhunPickerOpen = false" @apply="ruleYuhunPickerOpen = false" />
+  </ModalTransition>
+  <ModalTransition>
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" :compact="potentialComparisonCompact" reference-title="当前装配御魂" @close="potentialComparisonTargets = null; potentialComparisonCompact = false" />
+  </ModalTransition>
 </template>

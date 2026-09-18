@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModalTransition from "../components/ModalTransition.vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowLeftRight, Check, ClipboardPaste, Download, Eye, FileJson, GitCompareArrows, ImageUp, Import, LoaderCircle, Pencil, ScanQrCode, Search, SlidersHorizontal, Trash2, TriangleAlert, Upload, X } from "@lucide/vue";
 import { STAT_LABELS, type PlanComparisonDTO, type PlanComparisonFilter, type PlanDifference, type StatId } from "../../../src/browser.js";
@@ -181,7 +182,7 @@ async function rename(): Promise<void> {
   finally { renaming.value = false; }
 }
 async function remove(plan: SavedPlan): Promise<void> {
-  if (!window.confirm(`删除方案“${plan.name}”？`)) return;
+  if (!await store.confirmAction(`删除方案“${plan.name}”？`, "删除方案")) return;
   try { await store.removeSavedPlan(plan.id); }
   catch (reason) { pageError.value = reason instanceof Error ? reason.message : "删除失败"; }
 }
@@ -244,6 +245,7 @@ function exportPlan(plan: SavedPlan): void {
       </template>
     </div>
   </div>
+  <ModalTransition>
   <div v-if="importOpen" class="modal-backdrop" @click.self="!importBusy && (importOpen = false)" @keydown.esc="!importBusy && (importOpen = false)">
     <form class="import-dialog plan-import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-plan-title" :aria-busy="importBusy !== null" @submit.prevent="importCodePlan">
       <header><h2 id="import-plan-title">导入方案</h2><button class="icon-button" type="button" aria-label="关闭" :disabled="importBusy !== null" @click="importOpen = false"><X :size="18" /></button></header>
@@ -274,11 +276,18 @@ function exportPlan(plan: SavedPlan): void {
       </footer>
     </form>
   </div>
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="renamePlan" class="modal-backdrop" @click.self="!renaming && (renamePlan = null)">
     <form class="import-dialog plan-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-plan-title" @submit.prevent="rename"><header><h2 id="rename-plan-title">重命名方案</h2><button class="icon-button" type="button" aria-label="关闭" :disabled="renaming" @click="renamePlan = null"><X :size="18" /></button></header><div class="plan-import-form"><label>方案名称<input v-model="renameName" required maxlength="80" :disabled="renaming" /></label><p v-if="renameError" class="inline-warning" role="alert">{{ renameError }}</p><button class="primary" type="submit" :disabled="renaming || !renameName.trim()">{{ renaming ? '正在保存…' : '保存' }}</button></div></form>
   </div>
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="viewedPlan" class="modal-backdrop" @click.self="viewedPlan = null" @keydown.esc="viewedPlan = null"><section class="import-dialog plan-import-dialog" role="dialog" aria-modal="true" aria-labelledby="view-plan-title"><header><h2 id="view-plan-title">{{ viewedPlan.name }}</h2><button class="icon-button" aria-label="关闭" @click="viewedPlan = null"><X :size="18" /></button></header><div class="plan-import-form"><label>弃置码<textarea readonly :value="viewedPlan.discardCode ?? '无'" rows="5" /></label><label>捡回码<textarea readonly :value="viewedPlan.rescueCode ?? '无'" rows="5" /></label></div></section></div>
+  </ModalTransition>
+  <ModalTransition>
   <div v-if="filterOpen" class="modal-backdrop" @click.self="filterOpen = false" @keydown.esc="filterOpen = false"><section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="compare-filter-title"><header><h2 id="compare-filter-title">筛选御魂</h2><button class="icon-button" aria-label="关闭" @click="filterOpen = false"><X :size="18" /></button></header><div class="rule-form"><YuhunConditionEditor v-model="criteriaDraft" /></div><footer><button @click="criteriaDraft = emptyYuhunFilter()">重置</button><button class="primary" @click="applyFilter">应用</button></footer></section></div>
+  </ModalTransition>
 </template>
 
 <style scoped>

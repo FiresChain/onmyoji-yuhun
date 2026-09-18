@@ -36,6 +36,9 @@ Comparison requires a snapshot, but the plan library can be managed without one.
   unread release counts. `ui/src/notifications.ts` owns the newest-first release
   list; add a new stable `version` and its changes for each notification release.
   Read versions and onboarding progress persist independently in localStorage.
+- The notification dialog uses a compact, scrollable body. The feedback entry
+  directly below the test warning shows `ui/src/assets/wechat-feedback.jpg` and
+  the contact note; closing feedback returns to the notification list.
 - First visits show the test warning, then the data-sharing confirmation.
   The warning requires five seconds of visible reading; hidden tabs pause the
   timer, and backdrop/Escape cannot bypass either required confirmation. The
@@ -284,6 +287,11 @@ This is the main configuration surface.
 
 ## Reusable Presentation Components
 
+- `ui/src/components/ModalTransition.vue` wraps every modal's conditional root:
+  dialogs grow in on opening and shrink toward their opening control on closing,
+  with a centered fallback and reduced-motion support. Keep the wrapper mounted
+  outside `v-if`. `ConfirmationDialog.vue` renders `store.confirmAction` requests
+  so confirmation prompts use the same motion instead of browser-native dialogs.
 - `ui/src/components/EChart.vue` renders responsive canvas ECharts and disposes
   its chart/resize observer on unmount. It is used for snapshot distributions.
 - `ui/src/components/ExcelColumnFilter.vue` is the analysis-table filter menu:

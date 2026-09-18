@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, onScopeDispose, ref, shallowRef, watch } from "vue";
 import { defineStore } from "pinia";
 import { DEFAULT_DESIRED_FREE_SLOTS, maximumDesiredFreeSlots, normalizeDesiredFreeSlots } from "../../src/capacity.js";
 import type {
@@ -273,7 +273,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const defaultDisposition = ref<"retain" | "discard">("discard");
   const yuhunUserId = ref(loadYuhunUserId());
   const notificationState = ref(loadNotificationState());
-  const notificationDialog = ref<"warning" | "sharing" | "updates" | "inbox" | null>(null);
+  const notificationDialog = ref<"warning" | "sharing" | "updates" | "feedback" | "inbox" | null>(null);
+  const confirmationRequest = shallowRef<{ title: string; message: string } | null>(null);
+  let resolveConfirmation: ((confirmed: boolean) => void) | null = null;
   const notificationError = ref("");
   const displayedUpdates = shallowRef<readonly ReleaseNotification[]>([]);
   const unreadNotifications = computed(() => RELEASE_NOTIFICATIONS.filter(entry => !notificationState.value.readVersions.includes(entry.version)));
@@ -317,6 +319,23 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   function now(): number {
     return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
   }
+
+  function confirmAction(message: string, title = "确认操作"): Promise<boolean> {
+    if (confirmationRequest.value !== null) return Promise.resolve(false);
+    return new Promise(resolve => {
+      resolveConfirmation = resolve;
+      confirmationRequest.value = { title, message };
+    });
+  }
+
+  function answerConfirmation(confirmed: boolean): void {
+    const resolve = resolveConfirmation;
+    resolveConfirmation = null;
+    confirmationRequest.value = null;
+    resolve?.(confirmed);
+  }
+
+  onScopeDispose(() => answerConfirmation(false));
 
   function initializeNotifications(): void {
     if (notificationDialog.value !== null) return;
@@ -394,8 +413,15 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     notificationDialog.value = "warning";
   }
 
+  function openFeedback(): void {
+    if (notificationDialog.value !== "inbox") return;
+    notificationError.value = "";
+    notificationDialog.value = "feedback";
+  }
+
   function closeNotifications(): void {
     if (notificationDialog.value === "warning" || notificationDialog.value === "sharing") return;
+    if (notificationDialog.value === "feedback") { notificationDialog.value = "inbox"; return; }
     try {
       if (notificationDialog.value === "updates") {
         persistNotificationState({ ...notificationState.value, readVersions: [...new Set([...notificationState.value.readVersions, ...displayedUpdates.value.map(entry => entry.version)])] });
@@ -2209,7 +2235,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     importSnapshot, loadInventory, queryYuhunDetails, queryPreviewYuhun, runAnalysis, loadDecisions, loadYuhunDecisions, loadYuhunDecisionFacets, importYuhunFilterCode, saveManualTeamTarget, saveEditedTeamTarget,
     savedPlans, planLibraryBusy, planLibraryLoaded, comparisonBaseId, comparisonNextId, loadPlanLibrary, saveCurrentPlan, importSavedPlan, importSavedPlanFile, renameSavedPlan, removeSavedPlan, exportSavedPlan, compareSavedPlans,
     notificationState, notificationDialog, notificationError, displayedUpdates, unreadNotifications, dataSharing, sharingDraft, warningSecondsRemaining,
-    initializeNotifications, tickWarningReading, confirmTestWarning, confirmDataSharing, setDataSharingConsent, openNotifications, viewNotification, reviewTestWarning, closeNotifications,
+    confirmationRequest, confirmAction, answerConfirmation,
+    initializeNotifications, tickWarningReading, confirmTestWarning, confirmDataSharing, setDataSharingConsent, openNotifications, viewNotification, reviewTestWarning, openFeedback, closeNotifications,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
