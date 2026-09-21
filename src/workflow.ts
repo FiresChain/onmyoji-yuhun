@@ -1,6 +1,6 @@
 import { calculateBaselineBundle, type DominanceThresholds } from "./baseline.js";
 import { buildDecisionPlan, type DecisionPlan } from "./decision-plan.js";
-import { calculateYuhunCapacity, normalizeDesiredFreeSlots } from "./capacity.js";
+import { calculateYuhunCapacity, normalizeDesiredFreeSlots, normalizeRetainedImpactPercent, retainedImpactBudget } from "./capacity.js";
 import {
   decideSpeedCategories,
   FREQUENCY_BIAS_NOTICE,
@@ -226,6 +226,7 @@ export interface AnalysisSummaryDTO {
   readonly frequencyBiasNotice: string;
   readonly inventoryCapacity: InventoryCapacityDTO;
   readonly markedDiscardProjection: CapacityProjectionDTO;
+  readonly impactEligibleCount?: number;
   readonly diagnostics?: AnalysisDiagnosticsDTO;
 }
 
@@ -297,6 +298,7 @@ export interface GeneratePlanInput {
   readonly staticPolicy: StaticRetentionPolicy;
   /** Desired final free slots in the account inventory. */
   readonly desiredFreeSlots?: number;
+  readonly retainedImpactPercent?: number;
 }
 
 /** Drafts are sent to onmyoji-api for private binary encoding and are never persisted. */
@@ -313,6 +315,14 @@ export interface PreviewGroupDTO {
   readonly index: number;
   readonly name: string;
   readonly expected: number;
+}
+
+export interface RetentionImpactDTO {
+  readonly percent: number;
+  readonly eligibleCount: number;
+  readonly budget: number;
+  readonly actualPercent: number;
+  readonly affectedItems: readonly Pick<YuhunDecisionRowDTO, "row" | "suit" | "position" | "mainStat" | "mainValue" | "subStatValues" | "reason" | "reasonTags">[];
 }
 
 export interface PlanSummaryDTO {
@@ -336,6 +346,7 @@ export interface PlanSummaryDTO {
   readonly requiredRelease?: number;
   /** Whether the generated final cleanup reaches the desired capacity target. */
   readonly desiredFreeSlotsReached?: boolean;
+  readonly retentionImpact?: RetentionImpactDTO;
   readonly groups: readonly PreviewGroupDTO[];
 }
 
@@ -493,7 +504,8 @@ function previewGroups(
   plan: DecisionPlan,
   items: readonly YyxYuhun[],
   markedDiscardIds: ReadonlySet<string>,
-  desiredFreeSlots?: number
+  desiredFreeSlots?: number,
+  impact?: { percent: number; ids: ReadonlySet<string>; budget: number; decisions: readonly YuhunDecisionRowDTO[] }
 ): {
   summary: PlanSummaryDTO;
   checklist: ImportChecklistDTO;
@@ -559,6 +571,12 @@ function previewGroups(
       finalNewDiscardCount: preview.finalNewDiscardIds.length,
       capacityProjection,
       cleanupComparison,
+      ...(impact ? { retentionImpact: {
+        percent: impact.percent, eligibleCount: impact.ids.size, budget: impact.budget,
+        actualPercent: impact.ids.size ? extraCleanupCount * 100 / impact.ids.size : 0,
+        affectedItems: impact.decisions.filter(row => finalDiscardIds.has(items[row.row - 1]!.id) && impact.ids.has(items[row.row - 1]!.id))
+          .map(({ row, suit, position, mainStat, mainValue, subStatValues, reason, reasonTags }) => ({ row, suit, position, mainStat, reason, ...(mainValue === undefined ? {} : { mainValue }), ...(subStatValues === undefined ? {} : { subStatValues }), ...(reasonTags === undefined ? {} : { reasonTags }) }))
+      } } : {}),
       ...(normalizedDesiredFreeSlots === undefined ? {} : {
         desiredFreeSlots: normalizedDesiredFreeSlots,
         requiredRelease: requiredRelease ?? 0,
@@ -582,6 +600,7 @@ export class YuhunWorkflow {
   private analysis: AnalysisSummaryDTO | null = null;
   private yuhunDecisions: readonly YuhunDecisionRowDTO[] | null = null;
   private markedDiscardIds: ReadonlySet<string> | null = null;
+  private impactEligibleIds: ReadonlySet<string> = new Set();
   private decision: SpeedDecisionReport | null = null;
   private decisionInput: Parameters<typeof decideSpeedCategories>[0] | null = null;
   private draftPlan: DecisionPlan | null = null;
@@ -641,6 +660,9 @@ export class YuhunWorkflow {
         input.teamReports ?? [],
         input.defaultDisposition ?? "retain"
       );
+      this.impactEligibleIds = new Set(yuhunDecisions.flatMap((row, index) =>
+        row.disposition === "retain" && row.star === 6 && row.level === 0 && !row.locked && !row.garbage &&
+        !(row.matchedRules ?? []).some(rule => rule.pool === "enhance") ? [this.items![index]!.id] : []));
       diagnosticStage("decision-rows", decisionRowsStartedAt);
       for (const row of yuhunDecisions) for (const tag of row.reasonTags ?? [row.reason]) increment(reasonCounts, tag);
       const markedDiscardIds = new Set(
@@ -662,6 +684,7 @@ export class YuhunWorkflow {
         tier0CategoryCount: decision.tier0DiscardedCategoryCount,
         tier1CategoryCount: decision.tier1DiscardedCategoryCount,
         reasonCounts,
+        impactEligibleCount: this.impactEligibleIds.size,
         frequencyBiasNotice: "按当前库存及单件决策生成，不使用速度分类或风险档位。",
         inventoryCapacity: inventoryCapacity(this.items),
         markedDiscardProjection: {
@@ -806,12 +829,15 @@ export class YuhunWorkflow {
       const before = inventoryCapacity(this.items);
       const requiredRelease = desiredFreeSlots === undefined ? undefined
         : Math.max(0, before.totalCount + desiredFreeSlots - before.capacity);
-      const planInput = { headerHex, desiredFreeSlots };
+      if (input.retainedImpactPercent !== undefined && (!Number.isFinite(input.retainedImpactPercent) || input.retainedImpactPercent < 0 || input.retainedImpactPercent > 100)) throw new Error("允许影响比例必须在 0–100% 之间");
+      const retainedImpactPercent = normalizeRetainedImpactPercent(input.retainedImpactPercent ?? 0);
+      const impactBudget = retainedImpactBudget(this.impactEligibleIds.size, retainedImpactPercent);
+      const planInput = { headerHex, desiredFreeSlots, retainedImpactPercent };
       const planKey = JSON.stringify({ planInput, analysisKey: this.analysisKey });
       const cached = this.planCache.get(planKey);
-      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex, requiredRelease);
+      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex, requiredRelease, this.impactEligibleIds, impactBudget);
       const preview = cached === undefined
-        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots)
+        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots, { percent: retainedImpactPercent, ids: this.impactEligibleIds, budget: impactBudget, decisions: this.yuhunDecisions ?? [] })
         : { summary: cached.summary, checklist: cached.checklist };
       if (cached === undefined) {
         this.planCache.set(planKey, { plan, summary: preview.summary, checklist: preview.checklist });
@@ -964,7 +990,8 @@ export class YuhunWorkflow {
       groupLimitValid: this.planSummary !== null && this.planSummary.discardGroupCount <= 60 && this.planSummary.rescueGroupCount <= 60,
       roundtripValid: this.planSummary?.roundtripWarnings.length === 0,
       previewComplete: this.planSummary !== null,
-      retainedItemsProtected: this.planSummary?.cleanupComparison?.extraCleanupCount === 0,
+      // buildDecisionPlan independently verifies every affected ID and its budget.
+      retainedItemsProtected: this.planSummary !== null && (this.planSummary.cleanupComparison?.extraCleanupCount ?? Infinity) <= (this.planSummary.retentionImpact?.budget ?? 0),
     };
   }
 
@@ -976,6 +1003,7 @@ export class YuhunWorkflow {
     this.analysis = null;
     this.yuhunDecisions = null;
     this.markedDiscardIds = null;
+    this.impactEligibleIds = new Set();
     this.decision = null;
     this.decisionInput = null;
     this.draftPlan = null;

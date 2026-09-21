@@ -201,3 +201,77 @@ test("preview inventory uses the exact D/E pool membership and excludes locked p
   assert.deepEqual(paged.rows.map(row => row.row), [2]);
   assert.equal(workflow.queryInventory().total, 4);
 });
+
+test("impact allowance unlocks indistinguishable +0 retain classes but never hard protection", () => {
+  const items = [
+    ...Array.from({ length: 100 }, (_, i) => item(`drop-a-${i}`)), item("soft-a"),
+    ...Array.from({ length: 100 }, (_, i) => item(`drop-b-${i}`, { name: "火灵" })), item("soft-b", { name: "火灵" }),
+    item("enhance", { name: "破势" }), item("locked", { lock: true }), item("upgraded", { level: 15 }),
+    item("history", { garbage: true }),
+    item("level2", { name: "针女", level: 2 }), item("drop-blocked", { name: "针女" })
+  ];
+  const wanted = new Set(items.filter(i => i.id.startsWith("drop")).map(i => i.id));
+  const eligible = new Set(["soft-a", "soft-b", "locked", "upgraded", "history", "level2"]);
+  const preview = (budget: number, quota: number) => {
+    const plan = buildDecisionPlan(items, wanted, header, quota, eligible, budget);
+    return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  };
+  assert.equal(preview(0, 202).finalNewDiscardIds.length, 0);
+  assert.equal(preview(1, 202).finalNewDiscardIds.length, 101);
+  const both = preview(2, 202);
+  assert.equal(both.finalNewDiscardIds.length, 202);
+  assert.deepEqual(both.incidentalRestoreIds, []);
+  assert.deepEqual(both.finalNewDiscardIds.filter(id => !wanted.has(id)).sort(), ["soft-a", "soft-b"]);
+  assert.equal(preview(2, 101).finalNewDiscardIds.length, 101);
+  assert.equal(preview(2, 0).finalNewDiscardIds.length, 0);
+});
+
+test("zero-impact coverage takes priority even with a generous allowance", () => {
+  const items = [item("drop"), item("soft", { name: "火灵" })];
+  const plan = buildDecisionPlan(items, new Set(["drop"]), header, 1, new Set(["soft"]), 1);
+  const preview = previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  assert.deepEqual(preview.finalNewDiscardIds, ["drop"]);
+});
+
+test("workflow excludes enhancement matches from allowance, including overlapping discard rules", () => {
+  const items = [item("soft"), item("enhance", { name: "火灵" }), item("locked", { lock: true }), item("history", { garbage: true }), item("level1", { level: 1 }), item("level15", { level: 15 }), item("five", { star: 5 })];
+  const workflow = new YuhunWorkflow();
+  Object.assign(workflow, { items });
+  const criteria = filterShareFromDraft({ headerHex: header, planKind: "enhance", groups: [{ name: "强化", criteria: { types: ["火灵"] } }] }).groups[0]!.criteria;
+  const summary = workflow.analyze({ defaultDisposition: "retain", templateIds: [], riskTier: "tier1", rules: [
+    { id: "e", label: "强化", pool: "enhance", criteria }, { id: "d", label: "弃置", pool: "discard", criteria }
+  ] });
+  assert.equal(summary.impactEligibleCount, 1);
+  const generate = (percent: number) => workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, retainedImpactPercent: percent });
+  assert.equal(generate(99.9).summary.retentionImpact?.budget, 0);
+  assert.equal(generate(100).summary.retentionImpact?.budget, 1);
+  assert.equal(generate(0).summary.retentionImpact?.budget, 0);
+  assert.throws(() => generate(101));
+  assert.throws(() => generate(NaN));
+});
+
+test("workflow validates and reports a nonzero allowance without weakening enhancement protection", () => {
+  const items = [...Array.from({ length: 101 }, (_, i) => item(`drop-${i}`)), item("soft"), item("enhance", { name: "火灵" }), ...Array.from({ length: 5897 }, (_, i) => item(`locked-${i}`, { lock: true }))];
+  const workflow = new YuhunWorkflow();
+  Object.assign(workflow, { items });
+  const criteria = filterShareFromDraft({ headerHex: header, planKind: "enhance", groups: [{ name: "强化", criteria: { types: ["火灵"] } }] }).groups[0]!.criteria;
+  workflow.analyze({ defaultDisposition: "discard", templateIds: [], riskTier: "tier1", rules: [{ id: "e", pool: "enhance", label: "强化", criteria }], teamReports: [{
+    id: "t", label: "测试阵容", scope: "individual-best", successfulCount: 1, unsupportedCount: 0, entities: [{
+      entityIndex: 0, shikigamiId: null, shikigamiName: "测试式神", metricId: null, metricName: "输出", status: "success", message: "", score: 1, panel: null, pieces: [], exact: true,
+      candidateCount: 1, candidateCombinations: 1, evaluatedCombinations: 1, constraints: [], targetScoreRaw: null,
+      potentialEvidence: [{ yuhunId: "soft", strategy: "upgrade-upper-bound", position: 2, referenceSuit: null, referenceLevel: null, statesEvaluated: 1, upperScore: 2, baselineScore: 1, exactEmbryo: false }]
+    }]
+  }] });
+  const generate = (retainedImpactPercent: number) => workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 100, retainedImpactPercent });
+  assert.equal(generate(0).summary.finalNewDiscardCount, 0);
+  const relaxed = generate(100).summary;
+  assert.equal(relaxed.finalNewDiscardCount, 102);
+  assert.equal(relaxed.desiredFreeSlotsReached, true);
+  assert.equal(relaxed.retentionImpact?.eligibleCount, 1);
+  assert.equal(relaxed.retentionImpact?.budget, 1);
+  assert.equal(relaxed.retentionImpact?.actualPercent, 100);
+  assert.equal(relaxed.retentionImpact?.affectedItems.length, 1);
+  assert.equal(relaxed.retentionImpact?.affectedItems[0]?.reason, "阵容提升");
+  assert.equal(workflow.getGateState().retainedItemsProtected, true);
+  assert.equal(generate(0).summary.finalNewDiscardCount, 0);
+});

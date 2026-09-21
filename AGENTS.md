@@ -212,6 +212,17 @@ This is the main configuration surface.
   from current capacity (including overflow), stops after enough whole safe
   rules, and reports whether the target was reached. Insufficient coverage does
   not imply a safety failure; the existing safety gates remain independent.
+- A configurable retained-item impact percentage defaults to 0 and is saved
+  with session/project settings. Its denominator is retained, unlocked,
+  nonhistorical six-star +0 inventory excluding every active enhancement-rule
+  match (including discard/enhancement overlaps). Budgets round down to whole
+  items. Changes invalidate generated plans only. Generation first tries zero
+  impact, then a bounded D/E search with a union-counted final impact budget
+  when the free-slot quota is unmet. Enhancement matches, +1/+2 items, locks,
+  other stars/levels and historical-pool protection remain hard constraints.
+  Preview shows the actual percentage, budget and paginated affected inventory
+  with original retention reasons. Copy gates verify the declared allowance;
+  they still do not guarantee that the capacity target was reached.
 - Generation still returns one D/E pair. Multi-round experiments and safe reuse
   of E are documented in the internal research repository, not implemented as
   a multi-round execution UI. E is used to restore items from the discard pool,
@@ -221,8 +232,9 @@ This is the main configuration surface.
   pure-D coverage, then jointly expands D through safe E protection when the
   quota remains unmet. Each code stays within 60 groups; selection counts only
   newly covered targets. E cannot restore historical discards or separable
-  targets, and unused E rules are removed. Indistinguishable retain/discard
-  classes and normal +1/+2 items remain protected. The bounded search is a
+  targets in the zero-impact search, and unused E rules are removed. Indistinguishable retain/discard
+  classes remain protected at zero allowance; normal +1/+2 items are always
+  protected. The bounded search is a
   current-snapshot heuristic, not a global optimum or future-inventory proof.
 - Generates and previews the D discard and E rescue codes directly after
   analysis. The frontend sends the ID saved in Settings to the encode API;

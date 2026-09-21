@@ -9,17 +9,20 @@ function draft(headerHex: string, kind: "discard" | "enhance", groups: FilterCri
 }
 
 /** Current-inventory safe rule compression. Unknown/future inventory is not certified. */
-export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: ReadonlySet<string>, headerHex: string, requiredRelease = Infinity): DecisionPlan {
+export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: ReadonlySet<string>, headerHex: string, requiredRelease = Infinity, impactIds: ReadonlySet<string> = new Set(), impactBudget = 0): DecisionPlan {
   if (!/^[0-9a-f]{32}$/i.test(headerHex)) throw new Error("Header 必须是 16 字节十六进制");
   if (requiredRelease !== Infinity && (!Number.isSafeInteger(requiredRelease) || requiredRelease < 0)) throw new Error("清理目标必须为非负整数");
   const domain = items.filter(item => !item.lock && !item.garbage && item.star === 6 && item.level <= 2);
   const wanted = new Set(domain.filter(item => item.level === 0 && discardIds.has(item.id)).map(item => item.id));
-  const optimized = optimizeDecisionRules(items, wanted, requiredRelease);
+  if (!Number.isSafeInteger(impactBudget) || impactBudget < 0) throw new Error("允许影响数量必须为非负整数");
+  const eligibleImpact = new Set(domain.filter(item => item.level === 0 && !wanted.has(item.id) && impactIds.has(item.id)).map(item => item.id));
+  const optimized = optimizeDecisionRules(items, wanted, requiredRelease, eligibleImpact, impactBudget);
   const discardDraft = draft(headerHex, "discard", optimized.discard);
   const rescueDraft = draft(headerHex, "enhance", optimized.rescue);
   const preview = previewDualFilterShares({ items, discardShare: discardDraft && filterShareFromDraft(discardDraft), rescueShare: rescueDraft && filterShareFromDraft(rescueDraft) });
-  if (preview.finalNewDiscardIds.some(id => !wanted.has(id))) throw new Error("双码覆盖验证失败：命中了应保留御魂");
+  const affected = preview.finalNewDiscardIds.filter(id => !wanted.has(id));
+  if (affected.length > impactBudget || affected.some(id => !eligibleImpact.has(id))) throw new Error("双码覆盖验证失败：超出允许影响范围或数量");
   if (preview.incidentalRestoreIds.length) throw new Error("双码覆盖验证失败：恢复了历史弃置御魂");
   const dCount = discardDraft?.groups.length ?? 0, eCount = rescueDraft?.groups.length ?? 0;
-  return { discardDraft, rescueDraft, manifest: { policy: DEFAULT_STATIC_RETENTION_POLICY, discardSuitIds: [], protectedSuitIds: [], discardGroupCount: dCount, rescueGroupCount: eCount, decisionRescueGroupCount: eCount, staticRescueGroupCount: 0, decisionCellCount: optimized.cellCount, discardDomainDecisionCellCount: domain.length, requiredDecisionRetainCellCount: domain.length - wanted.size, auditedDecisionRetainCellCount: domain.length - wanted.size, groups: [...(discardDraft?.groups ?? []).map(group => ({ name: group.name, kind: "discard-domain" as const, description: "按本次分析生成的 +0 清理规则" })), ...(rescueDraft?.groups ?? []).map(group => ({ name: group.name, kind: "decision" as const, description: "保护分析保留项及无法区分的 1–2 级御魂" }))] } };
+  return { discardDraft, rescueDraft, manifest: { policy: DEFAULT_STATIC_RETENTION_POLICY, discardSuitIds: [], protectedSuitIds: [], discardGroupCount: dCount, rescueGroupCount: eCount, decisionRescueGroupCount: eCount, staticRescueGroupCount: 0, decisionCellCount: optimized.cellCount, discardDomainDecisionCellCount: domain.length, requiredDecisionRetainCellCount: domain.length - wanted.size - affected.length, auditedDecisionRetainCellCount: domain.length - wanted.size - affected.length, groups: [...(discardDraft?.groups ?? []).map(group => ({ name: group.name, kind: "discard-domain" as const, description: "按本次分析生成的 +0 清理规则" })), ...(rescueDraft?.groups ?? []).map(group => ({ name: group.name, kind: "decision" as const, description: "保护额度外保留项及无法区分的 1–2 级御魂" }))] } };
 }

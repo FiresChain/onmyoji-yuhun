@@ -73,3 +73,12 @@ export function calculateCleanupQuota(input: CleanupQuotaInput): CleanupQuota {
     requiredRelease: Math.max(0, input.totalCount + input.desiredFreeSlots - capacity)
   };
 }
+
+/** Percent of eligible retained +0 items; one decimal place, default zero. */
+export function normalizeRetainedImpactPercent(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value * 10) / 10)) : 0;
+}
+
+export function retainedImpactBudget(count: number, percent: number): number {
+  return Math.floor(count * Math.round(normalizeRetainedImpactPercent(percent) * 10) / 1000);
+}

@@ -4,7 +4,7 @@ import { nextTick } from "vue";
 import { emptyYuhunFilter } from "../yuhun-filter.js";
 import Codes from "./codes.vue";
 
-const { mockStore } = vi.hoisted(() => ({ mockStore: { plan: null as any, analysis: null as any, gateState: {}, copyAllowed: false, busy: null as string | null, desiredFreeSlots: 500, desiredFreeSlotsMaximum: 2800, requiredReleaseForTarget: 316, setDesiredFreeSlots: vi.fn(), queryPreviewYuhun: vi.fn() } }));
+const { mockStore } = vi.hoisted(() => ({ mockStore: { plan: null as any, analysis: null as any, gateState: {}, copyAllowed: false, busy: null as string | null, retainedImpactPercent: 0, retainedImpactLimit: 0, setRetainedImpactPercent: vi.fn(), desiredFreeSlots: 500, desiredFreeSlotsMaximum: 2800, requiredReleaseForTarget: 316, setDesiredFreeSlots: vi.fn(), queryPreviewYuhun: vi.fn() } }));
 vi.mock("../store.js", () => ({ useWorkbenchStore: () => mockStore }));
 vi.mock("../manual-target-config.js", () => ({ yuhunImage: () => null, yuhunDisplayName: (name: string) => name, yuhunCategory: () => "其他" }));
 
@@ -24,6 +24,24 @@ describe("generated rule inspection", () => {
     wrapper.unmount();
     mockStore.analysis = null;
     mockStore.desiredFreeSlots = 500;
+  });
+  it("configures the impact allowance and shows actual affected items with original reasons", async () => {
+    mockStore.analysis = { impactEligibleCount: 100 };
+    mockStore.retainedImpactPercent = 1;
+    mockStore.retainedImpactLimit = 1;
+    mockStore.setRetainedImpactPercent.mockImplementation(value => { mockStore.retainedImpactPercent = value; });
+    mockStore.plan = { groups: [], retentionImpact: { percent: 1, eligibleCount: 100, budget: 1, actualPercent: 1, affectedItems: [{ row: 1, suit: "招财猫", position: 2, mainStat: "speed", mainValue: 12, reason: "阵容提升" }] } };
+    const wrapper = mount(Codes);
+    expect(wrapper.text()).toContain("最多允许额外清理 1 件");
+    expect(wrapper.text()).toContain("实际影响保留项 1 件 / 1 件额度");
+    await wrapper.get('#retained-impact-percent').setValue('2.5');
+    expect(mockStore.setRetainedImpactPercent).toHaveBeenCalledWith(2.5);
+    await wrapper.findAll('button').find(button => button.text() === '查看影响明细')!.trigger('click');
+    const dialog = wrapper.get('[aria-labelledby="impact-title"]');
+    expect(dialog.text()).toContain('招财猫');
+    expect(dialog.text()).toContain('阵容提升');
+    wrapper.unmount();
+    mockStore.analysis = null;
   });
   it("opens the shared editor read-only and shows queried hit inventory", async () => {
     const criteria = { ...emptyYuhunFilter(), positions: [2], mainStats: ["speed"], subStats: [{ stat: "crit", requirement: "include" }] };

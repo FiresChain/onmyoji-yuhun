@@ -1,6 +1,6 @@
 import { computed, onScopeDispose, ref, shallowRef, watch } from "vue";
 import { defineStore } from "pinia";
-import { DEFAULT_DESIRED_FREE_SLOTS, maximumDesiredFreeSlots, normalizeDesiredFreeSlots } from "../../src/capacity.js";
+import { DEFAULT_DESIRED_FREE_SLOTS, maximumDesiredFreeSlots, normalizeDesiredFreeSlots, normalizeRetainedImpactPercent, retainedImpactBudget } from "../../src/capacity.js";
 import type {
   AnalysisSummaryDTO,
   AnalysisRuleInput,
@@ -287,6 +287,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   let warningWasVisible = false;
   let notificationFromInbox = false;
   const desiredFreeSlotsPreference = ref(DEFAULT_DESIRED_FREE_SLOTS);
+  const retainedImpactPercent = ref(0);
+  const retainedImpactLimit = computed(() => retainedImpactBudget(analysis.value?.impactEligibleCount ?? 0, retainedImpactPercent.value));
   const desiredFreeSlotsMaximum = computed(() => maximumDesiredFreeSlots(analysis.value?.markedDiscardProjection.discardCount ?? 0));
   const desiredFreeSlots = computed(() => analysis.value === null ? desiredFreeSlotsPreference.value
     : normalizeDesiredFreeSlots(desiredFreeSlotsPreference.value, analysis.value.markedDiscardProjection.discardCount));
@@ -776,6 +778,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         templateIds: templateIds.value,
         defaultDisposition: defaultDisposition.value,
         desiredFreeSlots: desiredFreeSlotsPreference.value,
+        retainedImpactPercent: retainedImpactPercent.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
@@ -830,7 +833,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   watch(
-    [snapshot, templateIds, riskTier, defaultDisposition, desiredFreeSlotsPreference, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
+    [snapshot, templateIds, riskTier, defaultDisposition, desiredFreeSlotsPreference, retainedImpactPercent, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
     scheduleSessionPersist,
     { deep: true }
   );
@@ -845,6 +848,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       snapshotNeedsPersist = true;
       snapshot.value = imported;
       desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
+      retainedImpactPercent.value = 0;
       teamCalculations.value = [];
       teamCalculationProgress.value = {};
       teamCalculationPaused.value = false;
@@ -894,6 +898,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       riskTier.value = stored.session.settings.riskTier;
       defaultDisposition.value = stored.session.settings.defaultDisposition ?? "discard";
       desiredFreeSlotsPreference.value = stored.session.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
+      retainedImpactPercent.value = normalizeRetainedImpactPercent(stored.session.settings.retainedImpactPercent ?? 0);
       budgetPerTenThousand.value = stored.session.settings.budgetPerTenThousand;
       staticPolicy.value = { ...stored.session.settings.staticPolicy };
       existingFilterCode.value = stored.session.settings.existingFilterCode;
@@ -1788,6 +1793,14 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     invalidateAnalysisResults();
   }
 
+  function setRetainedImpactPercent(next: number): void {
+    if (busy.value !== null || analysis.value === null) return;
+    const normalized = normalizeRetainedImpactPercent(next);
+    if (normalized === retainedImpactPercent.value) return;
+    retainedImpactPercent.value = normalized;
+    invalidateGeneratedPlan();
+  }
+
   function setDesiredFreeSlots(next: number): void {
     if (busy.value !== null || analysis.value === null) return;
     const normalized = normalizeDesiredFreeSlots(next, analysis.value.markedDiscardProjection.discardCount);
@@ -1855,7 +1868,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     plan.value = null;
     gateState.value = {};
     try {
-      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value, desiredFreeSlots: desiredFreeSlots.value });
+      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value, desiredFreeSlots: desiredFreeSlots.value, retainedImpactPercent: retainedImpactPercent.value });
       const encode = (draft: NonNullable<GeneratedPlanDTO["discardDraft"]>) => encodeYuhunDraft({ planKind: draft.planKind, groups: draft.groups, ...(userId === null ? {} : { id: userId }) });
       const [discard, rescue] = await Promise.all([
         generated.discardDraft === null ? Promise.resolve(null) : encode(generated.discardDraft),
@@ -1888,7 +1901,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       simulation.value = null;
       actuals.value = {};
       gateState.value = await client.getGateState();
-      notice.value = "双码已完成编码往返和当前库存保留保护验证；请按预演数量在游戏中核对";
+      notice.value = "双码已完成编码往返、严格保留项及允许影响额度验证；请按预演数量在游戏中核对";
       await persistSessionNow();
     } catch (reason) {
       fail(reason);
@@ -2006,6 +2019,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         templateIds: templateIds.value,
         riskTier: riskTier.value,
         desiredFreeSlots: desiredFreeSlotsPreference.value,
+        retainedImpactPercent: retainedImpactPercent.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
         defaultDisposition: defaultDisposition.value
@@ -2030,6 +2044,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     budgetPerTenThousand.value = project.settings.budgetPerTenThousand;
     staticPolicy.value = project.settings.staticPolicy;
     desiredFreeSlotsPreference.value = project.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
+    retainedImpactPercent.value = normalizeRetainedImpactPercent(project.settings.retainedImpactPercent ?? 0);
     staticPolicy.value = { ...staticPolicy.value, confirmed: true };
     teamTargets.value = builtInTeamTargets();
     nextTeamTargetId = 1;
@@ -2214,6 +2229,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     staticPolicy.value = { ...DEFAULT_POLICY };
     defaultDisposition.value = "discard";
     desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
+    retainedImpactPercent.value = 0;
     sessionReady = true;
     restoreCompleted.value = true;
     notice.value = "内存会话和本机自动保存已清空";
@@ -2241,7 +2257,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
     savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
     invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount, setTeamCalculationSchedulerDebugEnabled, clearTeamCalculationSchedulerDebugLog,
-    defaultDisposition, setDefaultDisposition, yuhunUserId, importYuhunUserId, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
+    defaultDisposition, setDefaultDisposition, yuhunUserId, importYuhunUserId, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, retainedImpactPercent, retainedImpactLimit, setRetainedImpactPercent, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets
   };

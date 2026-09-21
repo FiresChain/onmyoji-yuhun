@@ -328,6 +328,32 @@ describe("dual-code session persistence", () => {
     expect(restored.plan?.desiredFreeSlotsReached).toBe(true);
     expect(restored.plan?.discardCode).toBeNull();
   });
+  it("persists impact allowance, invalidates codes and defaults legacy sessions to zero", async () => {
+    const store = newStore();
+    await store.restoreLocalSession();
+    expect(store.retainedImpactPercent).toBe(0);
+    await store.generatePlan();
+    const analysis = store.analysis;
+    store.setRetainedImpactPercent(2.5);
+    expect(store.analysis).toBe(analysis);
+    expect(store.plan).toBeNull();
+    expect(store.copyAllowed).toBe(false);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(saved.session.settings.retainedImpactPercent).toBe(2.5);
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.retainedImpactPercent).toBe(2.5);
+    await restored.generatePlan();
+    expect(restored.plan?.retentionImpact?.percent).toBe(2.5);
+    expect(restored.plan?.retentionImpact?.affectedItems).toEqual([]);
+    expect(restored.copyAllowed).toBe(true);
+    await vi.advanceTimersByTimeAsync(150);
+    const reopened = newStore();
+    await reopened.restoreLocalSession();
+    expect(reopened.plan?.retentionImpact?.percent).toBe(2.5);
+    reopened.setRetainedImpactPercent(0);
+    expect(reopened.plan).toBeNull();
+  });
   it("makes startup and route guards await the same restoration", async () => {
     const store = newStore();
     let finishLoad!: (value: StoredWorkbenchSessionV1) => void;

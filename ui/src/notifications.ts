@@ -18,6 +18,14 @@ export interface ReleaseNotification {
 
 // Add new releases at the beginning with a new, stable version identifier.
 export const RELEASE_NOTIFICATIONS: readonly ReleaseNotification[] = [{
+  version: "2026.09.21.1",
+  date: "2026-09-21",
+  title: "保留项允许影响比例",
+  changes: [
+    "双码新增保留项允许影响比例，默认 0%；强化规则保留项继续严格保护。",
+    "空位不足时按额度优化规则覆盖，预演可查看实际影响数量、比例和御魂明细。"
+  ]
+}, {
   version: "2026.09.16.3",
   date: "2026-09-16",
   title: "数值显示与基础设置更新",

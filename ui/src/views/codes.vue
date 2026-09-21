@@ -6,7 +6,7 @@ import { STAT_LABELS, type PlanSummaryDTO, type InventoryRowDTO, type PageDTO, t
 import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunImage, yuhunDisplayName } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
-import { formatStatValue } from "../number-format.js";
+import { formatStatValue, formatNumber } from "../number-format.js";
 
 const store = useWorkbenchStore();
 const saveOpen = ref(false);
@@ -28,6 +28,16 @@ async function savePlan(): Promise<void> {
   } catch (reason) {
     saveError.value = reason instanceof Error ? reason.message : "保存失败";
   } finally { saving.value = false; }
+}
+const impactOpen = ref(false);
+const impactPage = ref(1);
+const impactRows = computed(() => store.plan?.retentionImpact?.affectedItems ?? []);
+const impactPageRows = computed(() => impactRows.value.slice((impactPage.value - 1) * 20, impactPage.value * 20));
+watch(() => store.plan, () => { impactOpen.value = false; impactPage.value = 1; });
+function updateRetainedImpactPercent(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  store.setRetainedImpactPercent(Number(input.value));
+  input.value = String(store.retainedImpactPercent);
 }
 const targetShortfall = computed(() => Math.max(0, (store.plan?.requiredRelease ?? 0) - (store.plan?.finalNewDiscardCount ?? 0)));
 function updateDesiredFreeSlots(event: Event): void {
@@ -79,7 +89,7 @@ function viewHits(group: PreviewGroup): void {
   hitSearch.value = "";
   void loadHits();
 }
-function statValue(stat: StatId, value: number): string {
+function statValue(stat: StatId, value: number | undefined): string {
   return formatStatValue(stat, value, store.displayDecimalPlaces);
 }
 </script>
@@ -92,6 +102,10 @@ function statValue(stat: StatId, value: number): string {
       <label for="desired-free-slots">预期空位
         <input id="desired-free-slots" type="number" inputmode="numeric" min="0" :max="store.desiredFreeSlotsMaximum" step="100" :value="store.desiredFreeSlots" :disabled="!!store.busy || store.desiredFreeSlotsMaximum === 0" aria-describedby="capacity-target-help" @change="updateDesiredFreeSlots" />
       </label>
+      <label for="retained-impact-percent">保留项允许影响
+        <input id="retained-impact-percent" type="number" inputmode="decimal" min="0" max="100" step="0.1" :value="store.retainedImpactPercent" :disabled="!!store.busy" aria-describedby="retained-impact-help" @change="updateRetainedImpactPercent" /> %
+      </label>
+      <span id="retained-impact-help">非强化规则保留的未锁定六星 +0 御魂共 {{ (store.analysis.impactEligibleCount ?? 0).toLocaleString() }} 件，最多允许额外清理 {{ (store.retainedImpactLimit ?? 0).toLocaleString() }} 件；仅在空位不足时使用。</span>
       <span id="capacity-target-help">清理后希望保留的总空位；本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件。上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}（严格小于标记数的最大整百数）。</span>
       <span v-if="store.desiredFreeSlotsMaximum === 0">标记不超过 100 件，整百目标为 0；若背包已超容，仍会尝试清理超出部分。</span>
     </div>
@@ -108,6 +122,11 @@ function statValue(stat: StatId, value: number): string {
       <span v-else-if="store.plan.desiredFreeSlotsReached">本次预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件；规则整组执行，可能超过目标。</span>
       <span v-else>当前方案受规则表达及每码 60 组限制，尚未达到目标。实际清理量以预演为准。</span>
       <span>仅标记弃置不会立即增加空位；这里预估的是最终消耗或移除这些御魂后的容量。</span>
+    </div>
+    <div v-if="store.plan.retentionImpact" class="capacity-target-result" role="status">
+      <strong>实际影响保留项 {{ impactRows.length.toLocaleString() }} 件 / {{ store.plan.retentionImpact.budget.toLocaleString() }} 件额度 · {{ formatNumber(store.plan.retentionImpact.actualPercent, store.displayDecimalPlaces) }}%</strong>
+      <span>设置上限 {{ store.plan.retentionImpact.percent }}% · 强化规则保留项继续严格保护。</span>
+      <button v-if="impactRows.length" class="secondary" @click="impactOpen = true; impactPage = 1">查看影响明细</button>
     </div>
     <div v-if="store.plan.capacityProjection && store.plan.cleanupComparison" class="metric-strip six capacity-strip" aria-label="双码预演清理对账">
       <div data-testid="plan-marked-count"><span>标记数量</span><strong>{{ store.plan.cleanupComparison.markedCount.toLocaleString() }}</strong></div>
@@ -141,6 +160,17 @@ function statValue(stat: StatId, value: number): string {
     </div>
   </template>
   <div v-else class="empty-state"><ShieldCheck :size="32" /><strong>尚未生成双码</strong><span>完成账号分析后，即可生成并预演。</span></div>
+  <ModalTransition>
+  <div v-if="impactOpen" class="modal-backdrop" @click.self="impactOpen = false" @keydown.esc="impactOpen = false">
+    <section class="import-dialog hit-dialog" role="dialog" aria-modal="true" aria-labelledby="impact-title">
+      <header><h2 id="impact-title">额外清理的保留项 · {{ impactRows.length }} 件</h2><button class="icon-button" aria-label="关闭" @click="impactOpen = false"><X :size="18" /></button></header>
+      <div class="table-wrap"><table class="inventory-table"><thead><tr><th>#</th><th>套装</th><th>位置</th><th>主属性</th><th>副属性</th><th>原保留原因</th></tr></thead><tbody>
+        <tr v-for="row in impactPageRows" :key="row.row"><td>{{ row.row }}</td><td>{{ yuhunDisplayName(row.suit) }}</td><td>{{ row.position }} 号</td><td>{{ STAT_LABELS[row.mainStat] }} {{ statValue(row.mainStat, row.mainValue) }}</td><td><div class="inventory-stat-list"><span v-for="stat in row.subStatValues" :key="stat.stat" class="inventory-stat"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ statValue(stat.stat, stat.value) }}</strong></span></div></td><td>{{ (row.reasonTags ?? [row.reason]).join(' / ') }}</td></tr>
+      </tbody></table></div>
+      <div class="pagination"><button :disabled="impactPage <= 1" @click="impactPage--">上一页</button><span>{{ impactPage }} / {{ Math.max(1, Math.ceil(impactRows.length / 20)) }}</span><button :disabled="impactPage * 20 >= impactRows.length" @click="impactPage++">下一页</button></div>
+    </section>
+  </div>
+  </ModalTransition>
   <ModalTransition>
   <div v-if="saveOpen" class="modal-backdrop" @click.self="!saving && (saveOpen = false)" @keydown.esc="!saving && (saveOpen = false)">
     <form class="import-dialog save-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="save-plan-title" @submit.prevent="savePlan">
