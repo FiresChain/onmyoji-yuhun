@@ -184,6 +184,9 @@ export interface ShikigamiOption {
 }
 
 export const SHIKIGAMI_OPTIONS: ShikigamiOption[] = [];
+export const SHIKIGAMI_RARITY_OPTIONS: string[] = ["全部"];
+
+const SHIKIGAMI_RARITY_ORDER = ["UR", "SP", "SSR", "SR", "R", "N", "L", "G"];
 
 const SHIKIGAMI_BY_HERO_ID = new Map<number, ShikigamiOption>();
 
@@ -200,6 +203,14 @@ function rebuildCatalog(catalog: AssetCatalog): void {
       avatar: assetUrl(item.avatar, "/assets/Shikigami/default.png")
     };
   }).filter((item) => Number.isSafeInteger(item.heroId)));
+  const rarities = [...new Set(SHIKIGAMI_OPTIONS.map((item) => item.rarity).filter(Boolean))];
+  SHIKIGAMI_RARITY_OPTIONS.splice(
+    0,
+    SHIKIGAMI_RARITY_OPTIONS.length,
+    "全部",
+    ...SHIKIGAMI_RARITY_ORDER.filter((rarity) => rarities.includes(rarity)),
+    ...rarities.filter((rarity) => !SHIKIGAMI_RARITY_ORDER.includes(rarity)).sort((left, right) => left.localeCompare(right, "zh"))
+  );
   SHIKIGAMI_BY_HERO_ID.clear();
   for (const item of SHIKIGAMI_OPTIONS) SHIKIGAMI_BY_HERO_ID.set(item.heroId, item);
 
@@ -245,5 +256,3 @@ export function shikigamiByHeroId(heroId: number): ShikigamiOption | null {
 export function shikigamiImage(heroId: number): string | null {
   return shikigamiByHeroId(heroId)?.avatar || null;
 }
-
-export const SHIKIGAMI_RARITY_OPTIONS = ["全部", "UR", "SP", "SSR", "SR", "R", "N", "L", "G"] as const;
