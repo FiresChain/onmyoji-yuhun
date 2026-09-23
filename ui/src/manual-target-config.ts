@@ -184,9 +184,15 @@ export interface ShikigamiOption {
 }
 
 export const SHIKIGAMI_OPTIONS: ShikigamiOption[] = [];
-export const SHIKIGAMI_RARITY_OPTIONS: string[] = ["全部"];
+export interface ShikigamiRarityOption {
+  readonly name: string;
+  readonly label: string;
+}
+
+export const SHIKIGAMI_RARITY_OPTIONS: ShikigamiRarityOption[] = [{ name: "全部", label: "全部" }];
 
 const SHIKIGAMI_RARITY_ORDER = ["UR", "SP", "SSR", "SR", "R", "N", "L", "G"];
+const SHIKIGAMI_RARITY_LABELS: Readonly<Record<string, string>> = { L: "联动", G: "呱太" };
 
 const SHIKIGAMI_BY_HERO_ID = new Map<number, ShikigamiOption>();
 
@@ -204,12 +210,13 @@ function rebuildCatalog(catalog: AssetCatalog): void {
     };
   }).filter((item) => Number.isSafeInteger(item.heroId)));
   const rarities = [...new Set(SHIKIGAMI_OPTIONS.map((item) => item.rarity).filter(Boolean))];
-  SHIKIGAMI_RARITY_OPTIONS.splice(
-    0,
-    SHIKIGAMI_RARITY_OPTIONS.length,
-    "全部",
+  const orderedRarities = [
     ...SHIKIGAMI_RARITY_ORDER.filter((rarity) => rarities.includes(rarity)),
     ...rarities.filter((rarity) => !SHIKIGAMI_RARITY_ORDER.includes(rarity)).sort((left, right) => left.localeCompare(right, "zh"))
+  ];
+  SHIKIGAMI_RARITY_OPTIONS.splice(0, SHIKIGAMI_RARITY_OPTIONS.length,
+    { name: "全部", label: "全部" },
+    ...orderedRarities.map((name) => ({ name, label: SHIKIGAMI_RARITY_LABELS[name] ?? name }))
   );
   SHIKIGAMI_BY_HERO_ID.clear();
   for (const item of SHIKIGAMI_OPTIONS) SHIKIGAMI_BY_HERO_ID.set(item.heroId, item);

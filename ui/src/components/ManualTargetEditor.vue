@@ -183,7 +183,7 @@ const targets = ref<ManualShikigamiTarget[]>(Array.from({ length: 6 }, (_, index
 const activeSlot = ref(props.initialTargets[0]?.entityIndex ?? 1);
 const shikigamiPickerOpen = ref(false);
 const shikigamiSearch = ref("");
-const shikigamiRarity = ref<(typeof SHIKIGAMI_RARITY_OPTIONS)[number]>("全部");
+const shikigamiRarity = ref("全部");
 const yuhunPickerOpen = ref(false);
 const activeSuitIndex = ref<number | null>(null);
 const activeSuitCount = ref<2 | 4>(4);
@@ -523,7 +523,7 @@ function removeLimit(id: number): void {
           <div class="selector-toolbar">
             <label class="selector-search"><Search :size="16" /><input v-model="shikigamiSearch" autofocus placeholder="搜索式神" /></label>
             <nav aria-label="式神稀有度">
-              <button v-for="rarity in SHIKIGAMI_RARITY_OPTIONS" :key="rarity" :class="{ active: shikigamiRarity === rarity }" @click="shikigamiRarity = rarity">{{ rarity }}</button>
+              <button v-for="rarity in SHIKIGAMI_RARITY_OPTIONS" :key="rarity.name" :class="{ active: shikigamiRarity === rarity.name }" @click="shikigamiRarity = rarity.name">{{ rarity.label }}</button>
             </nav>
           </div>
           <div class="asset-grid shikigami-grid">
