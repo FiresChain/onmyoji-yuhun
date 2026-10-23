@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import ModalTransition from "../components/ModalTransition.vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { hydrateTargetInspections } from "../hydrate-target-inspections.js";
 import { formatNumber, formatStatValue } from "../number-format.js";
 import {
   Check,
@@ -636,13 +637,15 @@ async function initializeCatalogAfterRestore(): Promise<void> {
 }
 
 async function hydrateTeamTargetInspections(): Promise<void> {
-  await Promise.all(store.teamTargets
+  await hydrateTargetInspections(store.teamTargets
     .filter((target) => target.source === "team-code" && (
       target.inspection?.editableTargets === undefined
       || !target.inspection.entities.every((entity) => "yuhunConfigEnabled" in entity)
       || !target.inspection.editableTargets.every((item) => "yuhunConfigEnabled" in item)
-    ))
-    .map((target) => store.inspectStoredTeamTarget(target.id)));
+    )),
+    (target) => store.inspectStoredTeamTarget(target.id),
+    () => viewMounted,
+  );
 }
 
 async function loadPublishedCatalog(savedState: typeof store.targetViewState): Promise<readonly Record<string, unknown>[] | null> {

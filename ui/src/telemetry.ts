@@ -34,7 +34,8 @@ async function post(path: string, body: unknown): Promise<boolean> {
     const response = await fetch(`${API_URL}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ consent: true, ...extra })
+      body: JSON.stringify({ consent: true, ...extra }),
+      signal: AbortSignal.timeout(10_000)
     });
     return response.ok;
   } catch { return false; }

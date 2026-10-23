@@ -368,7 +368,7 @@ export function catalogFromSceneSnapshot(value: unknown): readonly TargetDomain[
 
 async function publishedSceneSnapshotUrl(): Promise<string> {
   if (SCENE_SNAPSHOT_URL !== undefined && SCENE_SNAPSHOT_URL !== "") return SCENE_SNAPSHOT_URL;
-  const response = await fetch(SCENE_VERSION_URL);
+  const response = await fetch(SCENE_VERSION_URL, { signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`关卡版本读取失败（HTTP ${response.status}）`);
   const version = await response.json() as Partial<SceneVersionDocument>;
   const objectKey = version.objects?.scenes;
@@ -378,13 +378,35 @@ async function publishedSceneSnapshotUrl(): Promise<string> {
   return `${ASSET_BASE_URL}/${objectKey}`;
 }
 
-export async function fetchPublishedSceneData(url?: string): Promise<{ catalog: readonly TargetDomain[]; targets: readonly Record<string, unknown>[] }> {
-  const response = await fetch(url ?? await publishedSceneSnapshotUrl());
+type PublishedSceneData = { catalog: readonly TargetDomain[]; targets: readonly Record<string, unknown>[] };
+let pendingSceneLoad: { key: string; promise: Promise<PublishedSceneData> } | null = null;
+let loadedSnapshot: { url: string; data: PublishedSceneData } | null = null;
+
+export function fetchPublishedSceneData(url?: string): Promise<PublishedSceneData> {
+  const key = url === undefined ? "published" : `snapshot:${url}`;
+  if (pendingSceneLoad !== null && pendingSceneLoad.key === key) return pendingSceneLoad.promise;
+  const promise = readPublishedSceneData(url).finally(() => {
+    if (pendingSceneLoad?.promise === promise) pendingSceneLoad = null;
+  });
+  pendingSceneLoad = { key, promise };
+  return promise;
+}
+
+async function readPublishedSceneData(url?: string): Promise<PublishedSceneData> {
+  const snapshotUrl = url ?? await publishedSceneSnapshotUrl();
+  // Only the release's immutable timestamp URLs are reusable. Explicit mutable
+  // development overrides must still be fetched on subsequent loads.
+  const immutable = /^scenes\/snapshot-\d{8}T\d{9}Z\.json$/.test(snapshotUrl.slice(`${ASSET_BASE_URL}/`.length))
+    && snapshotUrl.startsWith(`${ASSET_BASE_URL}/`);
+  if (immutable && loadedSnapshot?.url === snapshotUrl) return loadedSnapshot.data;
+  const response = await fetch(snapshotUrl, { signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`关卡快照读取失败（HTTP ${response.status}）`);
   const snapshot = await response.json() as Partial<SceneCatalogSnapshot>;
   if (snapshot.schemaVersion !== 2 || !Array.isArray(snapshot.targets)) throw new TypeError("关卡快照版本无效");
-  return {
+  const data = {
     catalog: catalogFromSceneSnapshot(snapshot),
     targets: snapshot.targets.filter((target): target is Record<string, unknown> => typeof target === "object" && target !== null && !Array.isArray(target))
   };
+  if (immutable) loadedSnapshot = { url: snapshotUrl, data };
+  return data;
 }

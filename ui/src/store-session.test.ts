@@ -380,7 +380,7 @@ describe("dual-code session persistence", () => {
     expect(first.plan?.discardCode).toBeTruthy();
     expect(api.encode.mock.calls[0]![0]).not.toHaveProperty("headerHex");
     expect(api.encode.mock.calls[0]![0]).not.toHaveProperty("id");
-    expect(api.decode.mock.calls.every(([code]) => code !== "source")).toBe(true);
+    expect(api.decode).not.toHaveBeenCalled();
     expect(first.copyAllowed).toBe(true);
     expect(saved.session.plan).toEqual(first.plan);
     expect(saved.session.gateState).toEqual(first.gateState);
@@ -403,6 +403,19 @@ describe("dual-code session persistence", () => {
     await vi.advanceTimersByTimeAsync(150);
     expect(saved.session.plan).toBeNull();
     expect(restored.copyAllowed).toBe(false);
+  });
+  it("rejects incorrect round-trip criteria returned by encode without an extra decode request", async () => {
+    const store = newStore();
+    await store.restoreLocalSession();
+    api.encode.mockImplementationOnce(async draft => ({
+      yuhunCode: "incorrect-criteria",
+      share: filterShareFromDraft({ ...draft, headerHex, groups: [] })
+    }));
+    await store.generatePlan();
+    expect(store.error?.message).toContain("编码往返不一致");
+    expect(store.plan).toBeNull();
+    expect(store.copyAllowed).toBe(false);
+    expect(api.decode).not.toHaveBeenCalled();
   });
 
   it("preserves a blocked copy gate and invalidates the restored plan on rule changes", async () => {

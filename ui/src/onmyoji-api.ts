@@ -20,16 +20,35 @@ interface ApiEnvelope<T> {
   readonly error?: unknown;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+const pendingRequests = new Map<string, Promise<unknown>>();
+let retryAfterUntil = 0;
+
+function post<T>(path: string, body: unknown): Promise<T> {
+  const serialized = JSON.stringify(body);
+  const key = `${path}:${serialized}`;
+  const pending = pendingRequests.get(key);
+  if (pending) return pending as Promise<T>;
+  if (Date.now() < retryAfterUntil) return Promise.reject(new Error("请求过于频繁，请稍后手动重试"));
+  const result = send<T>(path, serialized).finally(() => pendingRequests.delete(key));
+  pendingRequests.set(key, result);
+  return result;
+}
+
+async function send<T>(path: string, body: string): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body,
+      signal: AbortSignal.timeout(20_000)
     });
   } catch {
     throw new Error("无法连接阵容码服务，请检查网络后重试");
+  }
+  if (response.status === 429) {
+    const seconds = Number(response.headers.get("Retry-After"));
+    retryAfterUntil = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000;
   }
   const payload = await response.json().catch(() => null) as ApiEnvelope<T> | null;
   if (!response.ok || payload?.ok !== true || payload.data === undefined) {
@@ -57,7 +76,11 @@ export async function decodeTeamCode(teamCode: string): Promise<TeamCodeInspecti
 
 export async function decodeYuhunCode(yuhunCode: string): Promise<YuhunFilterShare> {
   const data = await post<{ readonly share: YuhunFilterShare }>("/onmyoji/v1/yuhun-code/decode", { yuhunCode });
-  return { ...data.share, groups: data.share.groups.map(group => ({
+  return normalizeYuhunShare(data.share);
+}
+
+function normalizeYuhunShare(share: YuhunFilterShare): YuhunFilterShare {
+  return { ...share, groups: share.groups.map(group => ({
     ...group,
     criteria: { ...group.criteria, types: group.criteria.typeIds?.map(suitNameById) ?? group.criteria.types.map(canonicalYuhunName) }
   })) };
@@ -75,5 +98,6 @@ export async function encodeYuhunDraft(draft: Omit<YuhunFilterDraft, "headerHex"
     // interpret an ID-only condition as an unrestricted suit filter.
     return { ...group, criteria: { ...group.criteria, types, typeIds } };
   });
-  return post("/onmyoji/v1/yuhun-code/encode", { draft: { ...draft, groups } });
+  const data = await post<{ readonly yuhunCode: string; readonly share: YuhunFilterShare }>("/onmyoji/v1/yuhun-code/encode", { draft: { ...draft, groups } });
+  return { ...data, share: normalizeYuhunShare(data.share) };
 }

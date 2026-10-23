@@ -1883,7 +1883,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         if (userId !== null && encoded.share.headerHex.toLowerCase() !== userId) throw new Error("服务返回的御魂码 ID 与设置不一致，请重新生成");
         if (resolvedHeader !== null && resolvedHeader !== encoded.share.headerHex.toLowerCase()) throw new Error("双码使用的标识不一致，请重新生成");
         resolvedHeader = encoded.share.headerHex.toLowerCase();
-        const decoded = await decodeYuhunCode(encoded.yuhunCode);
+        // The encode endpoint decodes the actual emitted code into share before
+        // responding. Keep the draft/ID/safety comparison without a second POST.
+        const decoded = encoded.share;
         const expected = filterShareFromDraft({ ...draft, headerHex: resolvedHeader });
         const canonical = (share: typeof decoded) => filterShareFromDraft({ headerHex: share.headerHex, planKind: share.planKind === "discard" ? "discard" : "enhance", groups: share.groups.map(group => ({ name: group.name, criteria: group.criteria })) });
         if (decoded.warnings.length || decoded.planKind !== expected.planKind || JSON.stringify(canonical(decoded)) !== JSON.stringify(expected)) throw new Error("编码往返不一致，不能使用本次双码");
