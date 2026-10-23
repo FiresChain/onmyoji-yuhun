@@ -233,16 +233,16 @@ function openReason(row: YuhunDecisionRowDTO, tag: string): void {
 </template>
 
 <style scoped>
-.inventory-filter-button { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid #c7d0d0; border-radius: 4px; background: #fff; color: #334746; font-size: 12px; }
-.inventory-filter-button:hover, .inventory-filter-button.active { background: #e8f1ef; border-color: #638d85; }
-.inventory-filter-button i { width: 6px; height: 6px; border-radius: 50%; background: #357264; }
+.inventory-filter-button { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid var(--fc-border, #c7d0d0); border-radius: 4px; background: var(--fc-surface, #fff); color: var(--fc-ink, #334746); font-size: 12px; }
+.inventory-filter-button:hover, .inventory-filter-button.active { background: var(--fc-tint, #e8f1ef); border-color: var(--fc-accent, #638d85); }
+.inventory-filter-button i { width: 6px; height: 6px; border-radius: 50%; background: var(--fc-accent, #357264); }
 .default-disposition { display: flex; align-items: center; gap: 8px; }
 .default-disposition select { min-width: 80px; }
-.reason-dialog { background: white; color: #252525; width: min(560px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; padding: 20px; border-radius: 8px; }
+.reason-dialog { background: var(--fc-surface, white); color: var(--fc-ink, #252525); width: min(560px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; padding: 20px; border-radius: 8px; }
 .reason-dialog header { display: flex; align-items: center; justify-content: space-between; }
 .reason-dialog h2 { font-size: 18px; margin: 0; }
 .reason-dialog h3 { font-size: 15px; overflow-wrap: anywhere; }
-.reason-rule { border-top: 1px solid #ddd; margin-top: 16px; }
+.reason-rule { border-top: 1px solid var(--fc-border, #ddd); margin-top: 16px; }
 .reason-rule dl { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; font-size: 14px; }
 .reason-rule dd { margin: 0; overflow-wrap: anywhere; }
 </style>

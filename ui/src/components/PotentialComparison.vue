@@ -120,16 +120,16 @@ function displayTeamLabel(target: YuhunPotentialTarget): string | null {
 .potential-target-list { grid-column: 1; grid-row: 1 / 4; }
 .potential-target-list strong { white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
 .potential-roster { grid-column: 2 / 4; grid-row: 1; display: flex; gap: 6px; overflow-x: auto; padding: 3px; }
-.potential-roster button { flex: 0 0 115px; min-height: 62px; display: flex; align-items: center; gap: 6px; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 11px; }
-.potential-roster button.hit { color: #244e4b; border-color: #83a9a4; background: #e3f0ed; }
-.potential-roster button.active { outline: 2px solid #3f806f; }
+.potential-roster button { flex: 0 0 115px; min-height: 62px; display: flex; align-items: center; gap: 6px; padding: 8px; border: 1px solid var(--fc-border, #ccc); border-radius: 3px; font-size: 11px; }
+.potential-roster button.hit { color: var(--fc-success, #244e4b); border-color: var(--fc-success, #83a9a4); background: var(--fc-success-soft, #e3f0ed); }
+.potential-roster button.active { outline: 2px solid var(--fc-accent, #3f806f); }
 .potential-roster img { width: 32px; height: 32px; object-fit: cover; border-radius: 50%; }
 .potential-roster button:disabled { opacity: .65; }
 .potential-wheel { grid-column: 2; grid-row: 2 / 4; min-height: 390px; width: 100%; padding: 24px 12px; }
 .potential-wheel .yuhun-wheel { width: 280px; max-width: 90%; }
 .potential-wheel .yuhun-wheel-center { width: 86px; height: 105px; }
 .potential-wheel .yuhun-wheel-slot { width: 56px; height: 56px; }
-.potential-wheel .current { outline: 2px solid #fff; }
+.potential-wheel .current { outline: 2px solid var(--fc-accent, #fff); }
 .potential-comparison-dialog:not(.compact) .potential-comparison-meta { grid-column: 3; grid-row: 2; }
 .potential-comparison-dialog:not(.compact) .potential-diff-grid { grid-column: 3; grid-row: 3; }
 @media (max-width: 1000px) {

@@ -220,7 +220,7 @@ function statValue(stat: StatId, value: number | undefined): string {
 .capacity-target input { width: 110px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
 .capacity-target > span, .capacity-target-result > span { font-size: 12px; color: var(--muted); line-height: 1.6; }
 .capacity-target-result { display: grid; gap: 5px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; }
-.capacity-target-result.target-unmet { border-left-color: var(--red); }
+.capacity-target-result.target-unmet { border-left-color: var(--fc-danger, var(--red)); }
 .generated-code-pools { margin-bottom: 18px; align-items: start; }
 .generated-code-value { display: grid; gap: 6px; padding: 12px 13px; border-bottom: 1px solid var(--line); }
 .generated-code-value label { font-size: 10px; color: var(--muted); }
@@ -232,7 +232,7 @@ function statValue(stat: StatId, value: number | undefined): string {
 .generated-rule-name strong { font-size: 11px; overflow-wrap: anywhere; }
 .generated-rule-name small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .generated-rule-count { font-size: 10px; white-space: nowrap; color: var(--green); }
-.discard-pool .generated-rule-count { color: var(--red); }
+.discard-pool .generated-rule-count { color: var(--fc-danger, var(--red)); }
 .generated-rule-actions { display: flex; flex-shrink: 0; gap: 5px; }
 .icon-footer { justify-content: flex-end; }
 .hit-dialog { width: min(1120px,100%); }

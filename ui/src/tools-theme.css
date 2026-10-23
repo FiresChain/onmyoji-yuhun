@@ -1,0 +1,50 @@
+/* Shared Tools palette. Original mode uses the original-color fallbacks. */
+:root:not([data-tools-theme='original']) {
+  color-scheme: light;
+  --fc-bg: #f5f7fa;
+  --fc-surface: #fff;
+  --fc-soft: #edf1f6;
+  --fc-ink: #202938;
+  --fc-muted: #606c7d;
+  --fc-border: #dfe5ee;
+  --fc-accent: #315edb;
+  --fc-tint: #edf2ff;
+  --fc-on-accent: #fff;
+  --fc-danger: #b64444;
+  --fc-danger-soft: #fff0ef;
+  --fc-warning: #8d671f;
+  --fc-warning-soft: #fff7df;
+  --fc-success: #247454;
+  --fc-success-soft: #eaf6ef;
+  --fc-backdrop: rgb(25 32 46 / 58%);
+  --fc-shadow: rgb(25 32 46 / 20%);
+  --fc-shadow-soft: rgb(25 32 46 / 8%);
+  --fc-accent-glow: rgb(49 94 219 / 25%);
+  --fc-accent-glow-strong: rgb(49 94 219 / 40%);
+  /* Keep the snapshot's existing CSS chart series color. */
+  --fc-chart-count: #8b7841;
+}
+
+html:root[data-tools-theme='dark'] {
+  color-scheme: dark;
+  --fc-bg: #15181e;
+  --fc-surface: #1e232c;
+  --fc-soft: #272e3a;
+  --fc-ink: #e9edf5;
+  --fc-muted: #a5b0c2;
+  --fc-border: #394353;
+  --fc-accent: #9bb6ff;
+  --fc-tint: #2b3858;
+  --fc-on-accent: #172343;
+  --fc-danger: #ffaaa4;
+  --fc-danger-soft: #412b2e;
+  --fc-warning: #efd08d;
+  --fc-warning-soft: #3e3521;
+  --fc-success: #96d6b2;
+  --fc-success-soft: #233d32;
+  --fc-backdrop: rgb(5 8 14 / 72%);
+  --fc-shadow: rgb(0 0 0 / 36%);
+  --fc-shadow-soft: rgb(0 0 0 / 18%);
+  --fc-accent-glow: rgb(155 182 255 / 25%);
+  --fc-accent-glow-strong: rgb(155 182 255 / 40%);
+}

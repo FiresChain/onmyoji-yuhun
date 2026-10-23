@@ -390,15 +390,15 @@ async function run(action: () => void | Promise<void>): Promise<void> {
 
 <style scoped>
 .notification-button { position: relative; }
-.notification-badge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 3px; display: grid; place-items: center; background: var(--red); color: white; border-radius: 8px; font-size: 9px; line-height: 1; }
+.notification-badge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 3px; display: grid; place-items: center; background: var(--red); color: var(--fc-on-accent, white); border-radius: 8px; font-size: 9px; line-height: 1; }
 .user-id-current { display: grid; gap: 8px; margin-bottom: 20px; padding: 14px; background: var(--green-soft); border: 1px solid var(--line); }
 .user-id-current code { overflow-wrap: anywhere; }
 .user-id-form { display: grid; gap: 10px; }
 .user-id-form label { font-weight: 600; }
 .user-id-form textarea { width: 100%; resize: vertical; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
 .user-id-form button { justify-self: start; }
-.user-id-message { margin: 14px 0; color: var(--green); }
-.user-id-message.failed { color: var(--red); }
+.user-id-message { margin: 14px 0; color: var(--fc-success, var(--green)); }
+.user-id-message.failed { color: var(--fc-danger, var(--red)); }
 .telemetry-setting .switch { position: relative; }
 .telemetry-setting .switch input { display: block; position: absolute; width: 1px; height: 1px; opacity: 0; }
 .telemetry-setting .switch input:focus-visible + span { outline: 2px solid var(--green); outline-offset: 3px; }

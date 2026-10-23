@@ -4,6 +4,7 @@ import App from "./App.vue";
 import { router } from "./router.js";
 import { loadManualTargetCatalog } from "./manual-target-config.js";
 import "./styles.css";
+import "./tools-theme.css";
 
 void loadManualTargetCatalog()
   .catch((error: unknown) => {
