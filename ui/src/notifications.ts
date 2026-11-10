@@ -18,6 +18,15 @@ export interface ReleaseNotification {
 
 // Add new releases at the beginning with a new, stable version identifier.
 export const RELEASE_NOTIFICATIONS: readonly ReleaseNotification[] = [{
+  version: "2026.11.10.2",
+  date: "2026-11-10",
+  title: "影响比例与策略设置",
+  changes: [
+    "恢复双码的保留项允许影响比例，默认 0%；优先级决定让步顺序，比例限制让步总量。",
+    "策略优先级移至双码与预演，通过策略设置弹窗调整；取消不改变配置。",
+    "预演同时显示实际影响数量、比例和各策略让步结果；上一版未设置比例上限的双码需要重新生成。"
+  ]
+}, {
   version: "2026.11.10.1",
   date: "2026-11-10",
   title: "预置整理与策略优先级",

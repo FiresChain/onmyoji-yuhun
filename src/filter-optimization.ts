@@ -87,7 +87,7 @@ function bitCount(mask: bigint): number {
   return [...words(mask, Math.ceil(mask.toString(16).length / 8))].reduce((sum, word) => sum + popcount(word), 0);
 }
 
-function prepareBudgetCandidates(candidates: readonly Rule[], targets: bigint, affected: bigint) {
+function prepareBudgetCandidates(candidates: readonly Rule[], targets: bigint, affected: bigint, activeTier?: bigint) {
   const length = Math.ceil((targets | affected).toString(16).length / 8);
   const sparse = (mask: bigint) => {
     const result: { value: number; index: number }[] = [];
@@ -100,32 +100,38 @@ function prepareBudgetCandidates(candidates: readonly Rule[], targets: bigint, a
   };
   return {
     targets: words(targets, length), affected: words(affected, length),
+    activeTier: activeTier === undefined ? undefined : words(activeTier, length),
     rules: candidates.map(rule => ({ rule, good: sparse(rule.matches & targets), loss: sparse(rule.matches & affected) }))
   };
 }
 
 /** Counts the union of final affected retain items, never per-rule duplicate hits. */
-function selectWithBudget(prepared: ReturnType<typeof prepareBudgetCandidates>, budget: number, quota: number, penalty: number, limit: number, allowLossOnly = false): Selection {
+function selectWithBudget(prepared: ReturnType<typeof prepareBudgetCandidates>, budget: number, quota: number, penalty: number, limit: number, tierBudget?: number): Selection {
   const uncovered = prepared.targets.slice(), unspent = prepared.affected.slice();
   const remaining = [...prepared.rules];
   const rules: Rule[] = [];
-  let matches = 0n, total = 0, spent = 0;
+  let matches = 0n, total = 0, spent = 0, tierSpent = 0;
   while (rules.length < limit && total < quota) {
-    let best = -1, bestGood = 0, bestLoss = 0, bestScore = -1;
+    let best = -1, bestGood = 0, bestLoss = 0, bestTierLoss = 0, bestScore = -1;
     for (let i = 0; i < remaining.length; i++) {
       const entry = remaining[i]!;
-      let good = 0, loss = 0;
+      let good = 0, loss = 0, tierLoss = 0;
       for (const word of entry.good) good += popcount(word.value & uncovered[word.index]!);
-      for (const word of entry.loss) loss += popcount(word.value & unspent[word.index]!);
+      for (const word of entry.loss) {
+        const newLoss = word.value & unspent[word.index]!;
+        loss += popcount(newLoss);
+        if (prepared.activeTier) tierLoss += popcount(newLoss & prepared.activeTier[word.index]!);
+      }
       const gain = good + loss;
-      if (!(allowLossOnly ? gain : good) || spent + loss > budget) continue;
-      const finishes = total + good + loss >= quota;
+      if (spent + loss > budget || (tierBudget === undefined ? good === 0 : gain === 0 || tierSpent + tierLoss > tierBudget)) continue;
+      const finishes = total + gain >= quota;
       const bestFinishes = best >= 0 && total + bestGood + bestLoss >= quota;
-      const score = (allowLossOnly ? gain : good) / (1 + penalty * loss);
+      const score = (tierBudget === undefined ? good : gain) / (1 + penalty * (loss + tierLoss));
+      const lossOrder = tierLoss - bestTierLoss || loss - bestLoss;
       const better = finishes !== bestFinishes ? finishes : finishes
-        ? loss < bestLoss || (loss === bestLoss && good < bestGood)
-        : score > bestScore || (score === bestScore && loss < bestLoss);
-      if (best < 0 || better) { best = i; bestGood = good; bestLoss = loss; bestScore = score; }
+        ? lossOrder < 0 || (lossOrder === 0 && good < bestGood)
+        : score > bestScore || (score === bestScore && lossOrder < 0);
+      if (best < 0 || better) { best = i; bestGood = good; bestLoss = loss; bestTierLoss = tierLoss; bestScore = score; }
     }
     if (best < 0) break;
     const entry = remaining.splice(best, 1)[0]!;
@@ -133,6 +139,7 @@ function selectWithBudget(prepared: ReturnType<typeof prepareBudgetCandidates>, 
     matches |= entry.rule.matches;
     total += bestGood + bestLoss;
     spent += bestLoss;
+    tierSpent += bestTierLoss;
     for (const word of entry.good) uncovered[word.index] = uncovered[word.index]! & ~word.value;
     for (const word of entry.loss) unspent[word.index] = unspent[word.index]! & ~word.value;
   }
@@ -378,7 +385,7 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
   }
   let activeTierCount = 0;
   let weakerTiers = 0n;
-  if (Number.isFinite(quota)) for (const [index, activeTier] of releaseTiers.entries()) {
+  if (impactBudget > 0 && Number.isFinite(quota)) for (const [index, activeTier] of releaseTiers.entries()) {
     if (best.discard.count >= quota) break;
     if (!activeTier) continue;
     activeTierCount = index + 1;
@@ -402,24 +409,27 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
     };
     const protections = new Map([empty, best.rescue, rescue].map(protection => [protection.matches, protection]));
     for (const protection of protections.values()) {
-      const affected = activeTier & ~protection.matches;
-      const maxBudget = bitCount(affected);
-      const free = (originalTargets | weakerTiers) & ~protection.matches;
-      const candidates = search(free | affected, hard & ~protection.matches, affected, maxBudget).merged;
-      const prepared = prepareBudgetCandidates(candidates, free, affected);
+      // Every enabled release tier shares the same union-counted limit. The
+      // separate active-tier limit tries to minimize the newest, stronger loss.
+      const affected = allowed & ~protection.matches;
+      const activeAffected = affected & activeTier;
+      const maxTierBudget = Math.min(impactBudget, bitCount(activeAffected));
+      const free = originalTargets & ~protection.matches;
+      const candidates = search(free | affected, hard & ~protection.matches, affected, impactBudget).merged;
+      const prepared = prepareBudgetCandidates(candidates, free, affected, activeAffected);
       for (const penalty of [0, 0.5, 2, 8]) {
-        let lower = 0, upper = maxBudget;
-        let budget = maxBudget;
+        let lower = 0, upper = maxTierBudget;
+        let tierBudget = maxTierBudget;
         for (let trial = 0; lower <= upper && trial < 9; trial++) {
-          const discard = selectWithBudget(prepared, budget, quota, penalty, limits.discard, true);
+          const discard = selectWithBudget(prepared, impactBudget, quota, penalty, limits.discard, tierBudget);
           const needed = discard.matches & protection.matches & (originalProtected | originalTargets);
           const pruned = selectRescue(protection.rules, needed);
           if ((needed & ~pruned.matches) !== 0n) break;
           const candidate = { discard, rescue: pruned };
           consider(candidate);
           if (discard.count >= quota) upper = losses(candidate, activeTier) - 1;
-          else lower = budget + 1;
-          budget = Math.floor((lower + upper) / 2);
+          else lower = tierBudget + 1;
+          tierBudget = Math.floor((lower + upper) / 2);
         }
       }
     }

@@ -191,22 +191,6 @@ This is the main configuration surface.
   appear inside the dialog. Each condition group becomes one enabled rule,
   preserving supported advanced criteria and the pool encoded in the code.
 
-#### Retention Strategy Priority
-
-- Strategies are ordered from highest to lowest retention priority, with
-  independent enablement and accessible move-up/move-down controls. The initial
-  order is existing-attribute improvement, equivalent-suit potential, then
-  potential requiring a new substat. Settings persist with the private session.
-- Enabled preset rules determine covered items first; rescue wins a
-  discard/rescue overlap. Only inventory matching neither pool enters strategy
-  optimization. A candidate matching multiple enabled strategies belongs to its
-  highest priority, so it is never counted or released twice.
-- When the free-slot target is unmet, generation permits low-priority strategy
-  retention to yield before higher priorities. It stops relaxing once the
-  preview reaches the target. Preset rescue matches and existing hard inventory
-  protections remain protected. Legacy potential evidence without an explicit
-  new-substat classification is conservatively protected until recalculation.
-
 ### 3. Analysis Results (`ui/src/views/analysis.vue`)
 
 - Default yuhun disposition is discard for fresh sessions; an explicitly saved
@@ -224,6 +208,22 @@ This is the main configuration surface.
 
 ### 4. Dual Codes and Preview (`ui/src/views/codes.vue`)
 
+- **Strategy settings** opens a dialog using the existing modal style, with
+  enablement and accessible move-up/move-down controls ordered highest first.
+  Its initial order is existing-attribute improvement, equivalent-suit
+  potential, then potential requiring a new substat. Edits remain a local draft
+  until Save; Cancel leaves the configuration and generated plan unchanged.
+  Saving refreshes analysis from existing team reports without recalculating
+  teams, invalidates the old codes, and keeps the user on the Codes page.
+- Enabled preset rules determine covered items first; rescue wins a
+  discard/rescue overlap. Only inventory matching neither pool enters strategy
+  optimization. A candidate matching multiple enabled strategies belongs to its
+  highest priority, so it is never counted or released twice.
+- When the free-slot target is unmet, low-priority strategy retention yields
+  before higher priorities within the global impact allowance. Preset rescue
+  and existing hard inventory protections remain protected. Legacy evidence
+  without an explicit new-substat classification stays protected until the
+  user recalculates the affected teams.
 - The desired free-slot input means final inventory free slots, defaults to 500,
   and is capped at the greatest nonnegative multiple of 100 strictly below the
   sum of marked-discard and releasable strategy counts (2831 -> 2800,
@@ -234,10 +234,18 @@ This is the main configuration surface.
   preset base first, and stops supplemental rules after reaching the quota.
   It reports whether the target was reached. Insufficient coverage does
   not imply a safety failure; the existing safety gates remain independent.
-- Priority-based generation replaces the percentage control in the current UI.
-  The legacy percentage input remains available to older core callers. The
-  free-slot limit includes releasable strategy candidates, so it does not
-  prevent a priority search before that search starts.
+- Strategy priority and retained-item impact percentage work together: priority
+  selects the release order and the percentage caps the union of final released
+  retain items across every tier. The percentage defaults to 0; its denominator
+  is retained, unlocked, nonhistorical six-star +0 inventory excluding every
+  enabled enhancement-rule match, and its budget rounds down to whole items.
+  Existing hard protection and preset rescue matches cannot yield. Changes to
+  the percentage invalidate only the generated plan. The free-slot limit still
+  includes releasable strategy candidates; an allowance may leave a shortfall.
+- Preview displays the actual impact percentage, affected-item details, and
+  per-strategy counts together. Restored priority plans without a verified
+  percentage allowance must be regenerated; the independent plan library stays
+  intact.
 - Preview shows enabled preset conditions and their coverage, plus actual
   retained/released counts by strategy. Preset conditions are adapted to the
   safe cleanup domain when generating executable rules; the original preset

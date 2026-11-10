@@ -345,16 +345,45 @@ test("supplemental release starts only on a shortfall and follows tier order", (
   ];
   const low = new Set(["low-a", "low-b", "low-single", "blocked", "level-1", "level-2", "locked", "historical", "low-star", "leveled"]);
   const high = new Set(["high-a", "high-b"]);
-  const runPrioritized = (quota: number, tiers: readonly ReadonlySet<string>[]) => {
-    const plan = buildDecisionPlan(items, new Set(["drop"]), header, quota, undefined, 0, { tiers, presetRules: [], presetDiscardIds: new Set() });
+  const runPrioritized = (quota: number, tiers: readonly ReadonlySet<string>[], budget = 100) => {
+    const plan = buildDecisionPlan(items, new Set(["drop"]), header, quota, new Set([...low, ...high]), budget, { tiers, presetRules: [], presetDiscardIds: new Set() });
     return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
   };
   assert.deepEqual(runPrioritized(1, [low, high]).finalNewDiscardIds, ["drop"]);
-  assert.deepEqual(runPrioritized(2, [low, high]).finalNewDiscardIds, ["drop", "low-single"]);
-  assert.deepEqual(runPrioritized(2, [high, low]).finalNewDiscardIds, ["high-a", "high-b"]);
+  assert.deepEqual(runPrioritized(2, [low, high], 2).finalNewDiscardIds, ["drop", "low-single"]);
+  assert.deepEqual(runPrioritized(2, [high, low], 2).finalNewDiscardIds, ["high-a", "high-b"]);
+  assert.deepEqual(runPrioritized(2, [low, high], 0).finalNewDiscardIds, ["drop"]);
   const shortfall = runPrioritized(100, [low, high]);
   assert.deepEqual(shortfall.finalNewDiscardIds, ["drop", "low-a", "low-b", "low-single", "high-a", "high-b"]);
   assert.deepEqual(shortfall.incidentalRestoreIds, []);
+});
+
+test("higher-tier reoptimization shares the original global impact cap", () => {
+  const items = [
+    item("weak-a", { name: "火灵" }), item("weak-b", { name: "火灵" }),
+    item("strong"), item("marked-a"), item("marked-b"),
+    item("unclassified", { name: "针女" })
+  ];
+  const wanted = new Set(["marked-a", "marked-b"]);
+  const tiers = [new Set(["weak-a", "weak-b"]), new Set(["strong"])];
+  const preview = (budget: number) => {
+    const plan = buildDecisionPlan(items, wanted, header, 5, new Set([...tiers.flatMap(tier => [...tier]), "unclassified"]), budget, { tiers, presetRules: [], presetDiscardIds: new Set() });
+    return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  };
+  assert.deepEqual(preview(2).finalNewDiscardIds, ["strong", "marked-a", "marked-b"]);
+  assert.deepEqual(preview(3).finalNewDiscardIds, ["weak-a", "weak-b", "strong", "marked-a", "marked-b"]);
+});
+
+test("overlapping discard rules spend one impact slot for the same retained item", () => {
+  const items = [
+    item("shared", { position: 1 }), item("marked-a", { position: 2 }),
+    item("marked-b", { name: "火灵", position: 1 }), item("keep", { name: "火灵", position: 2 })
+  ];
+  const affected = new Set(["shared"]);
+  const plan = buildDecisionPlan(items, new Set(["marked-a", "marked-b"]), header, 3, affected, 1, { tiers: [affected], presetRules: [], presetDiscardIds: new Set() });
+  const preview = previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  assert.equal(preview.discardMatch?.groups.filter(group => group.matchedIds.includes("shared")).length, 2);
+  assert.deepEqual(preview.finalNewDiscardIds, ["shared", "marked-a", "marked-b"]);
 });
 
 test("preset cleanup remains in the plan at quota zero and reports protected blockers", () => {
@@ -380,27 +409,48 @@ test("preset cleanup remains in the plan at quota zero and reports protected blo
   assert.equal(workflow.getGateState().retainedItemsProtected, true);
 });
 
-test("capacity cap includes strategy-retained items and summary reflects final combined releases", () => {
+test("capacity cap includes strategy-retained items and both summaries use final combined releases", () => {
   const workflow = new YuhunWorkflow();
-  const retained = Array.from({ length: 101 }, (_, index) => item(`eligible-${index}`, { name: "火灵" }));
-  const items = [item("base"), ...retained, ...Array.from({ length: 5898 }, (_, index) => item(`locked-${index}`, { lock: true }))];
+  const retained = Array.from({ length: 101 }, (_, index) => item(`eligible-${index}`, { name: index < 90 ? "火灵" : "针女" }));
+  const items = [
+    item("base"), ...retained, item("default", { name: "破势" }), item("legacy", { name: "狂骨" }), item("enhance", { name: "树妖" }),
+    ...Array.from({ length: 5895 }, (_, index) => item(`locked-${index}`, { lock: true }))
+  ];
   Object.assign(workflow, { items });
   const summary = workflow.analyze({
     templateIds: [], riskTier: "tier1", defaultDisposition: "retain", retentionStrategies: defaultRetentionStrategies(),
-    rules: [rule("d", "discard", "预设清理", ["招财猫"])],
-    teamReports: reports(retained.map(entry => evidence(entry.id, { requiresNewSubstat: true })))
+    rules: [rule("d", "discard", "预设清理", ["招财猫"]), rule("e", "enhance", "预设保留", ["树妖"])],
+    teamReports: reports([...retained.map(entry => evidence(entry.id, { requiresNewSubstat: true })), evidence("legacy"), evidence("enhance", { requiresNewSubstat: true })])
   });
   assert.equal(summary.markedDiscardProjection.discardCount, 1);
   assert.equal(summary.strategyEligibleCount, 101);
-  const plan = workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 100 });
+  assert.equal(summary.impactEligibleCount, 103);
+  const generate = (retainedImpactPercent?: number) => workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 100, ...(retainedImpactPercent === undefined ? {} : { retainedImpactPercent }) });
+  assert.equal(generate().summary.finalNewDiscardCount, 1);
+  assert.equal(generate(0.9).summary.retentionImpact?.budget, 0);
+  const capped = generate(90).summary;
+  assert.equal(capped.finalNewDiscardCount, 91);
+  assert.equal(capped.desiredFreeSlotsReached, false);
+  assert.equal(capped.strategyRetention?.releasedCount, 90);
+  assert.equal(capped.retentionImpact?.budget, 92);
+  assert.equal(capped.retentionImpact?.actualPercent, 90 * 100 / 103);
+  assert.equal(capped.retentionImpact?.affectedItems.length, 90);
+  assert.equal(workflow.getGateState().retainedItemsProtected, true);
+  const plan = generate(100);
   assert.equal(plan.summary.desiredFreeSlots, 100);
   assert.equal(plan.summary.finalNewDiscardCount, 102);
   assert.equal(plan.summary.desiredFreeSlotsReached, true);
   assert.equal(plan.summary.strategyRetention?.releasedCount, 101);
   assert.deepEqual(plan.summary.strategyRetention?.strategies.at(-1), { id: "new-substat", label: "补出新属性潜力", priority: 3, retainedCount: 0, releasedCount: 101 });
-  assert.equal(plan.summary.retentionImpact, undefined);
+  assert.equal(plan.summary.retentionImpact?.percent, 100);
+  assert.equal(plan.summary.retentionImpact?.eligibleCount, 103);
+  assert.equal(plan.summary.retentionImpact?.budget, 103);
+  assert.equal(plan.summary.retentionImpact?.affectedItems.length, 101);
   assert.equal(plan.discardDraft?.groups[0]?.name, "预设清理");
   assert.equal(workflow.getGateState().retainedItemsProtected, true);
+  assert.throws(() => generate(-0.1));
+  assert.throws(() => generate(100.1));
+  assert.throws(() => generate(NaN));
 });
 
 test("growth evidence uses any valid improvement without new stat keys and scores real scattered replacements", () => {

@@ -529,8 +529,8 @@ function previewGroups(
   plan: DecisionPlan,
   items: readonly YyxYuhun[],
   markedDiscardIds: ReadonlySet<string>,
-  desiredFreeSlots?: number,
-  impact?: { percent: number; ids: ReadonlySet<string>; budget: number; decisions: readonly YuhunDecisionRowDTO[] },
+  desiredFreeSlots: number | undefined,
+  impact: { percent: number; ids: ReadonlySet<string>; budget: number; decisions: readonly YuhunDecisionRowDTO[] },
   priority?: PriorityAnalysis
 ): {
   summary: PlanSummaryDTO;
@@ -602,12 +602,12 @@ function previewGroups(
       finalNewDiscardCount: preview.finalNewDiscardIds.length,
       capacityProjection,
       cleanupComparison,
-      ...(impact ? { retentionImpact: {
+      retentionImpact: {
         percent: impact.percent, eligibleCount: impact.ids.size, budget: impact.budget,
         actualPercent: impact.ids.size ? extraCleanupCount * 100 / impact.ids.size : 0,
         affectedItems: impact.decisions.filter(row => finalDiscardIds.has(items[row.row - 1]!.id) && impact.ids.has(items[row.row - 1]!.id))
           .map(({ row, suit, position, mainStat, mainValue, subStatValues, reason, reasonTags }) => ({ row, suit, position, mainStat, reason, ...(mainValue === undefined ? {} : { mainValue }), ...(subStatValues === undefined ? {} : { subStatValues }), ...(reasonTags === undefined ? {} : { reasonTags }) }))
-      } } : {}),
+      },
       ...(priority && strategyCounts ? {
         presetCoverage: {
           ...priority.presetCoverage,
@@ -756,7 +756,8 @@ export class YuhunWorkflow {
         tier0CategoryCount: decision.tier0DiscardedCategoryCount,
         tier1CategoryCount: decision.tier1DiscardedCategoryCount,
         reasonCounts,
-        ...(retentionStrategies === undefined ? { impactEligibleCount: this.impactEligibleIds.size } : { strategyEligibleCount }),
+        impactEligibleCount: this.impactEligibleIds.size,
+        ...(retentionStrategies === undefined ? {} : { strategyEligibleCount }),
         frequencyBiasNotice: "按当前库存及单件决策生成，不使用速度分类或风险档位。",
         inventoryCapacity: inventoryCapacity(this.items),
         markedDiscardProjection: {
@@ -902,8 +903,8 @@ export class YuhunWorkflow {
       const before = inventoryCapacity(this.items);
       const requiredRelease = desiredFreeSlots === undefined ? undefined
         : Math.max(0, before.totalCount + desiredFreeSlots - before.capacity);
-      if (priority === null && input.retainedImpactPercent !== undefined && (!Number.isFinite(input.retainedImpactPercent) || input.retainedImpactPercent < 0 || input.retainedImpactPercent > 100)) throw new Error("允许影响比例必须在 0–100% 之间");
-      const retainedImpactPercent = priority ? 0 : normalizeRetainedImpactPercent(input.retainedImpactPercent ?? 0);
+      if (input.retainedImpactPercent !== undefined && (!Number.isFinite(input.retainedImpactPercent) || input.retainedImpactPercent < 0 || input.retainedImpactPercent > 100)) throw new Error("允许影响比例必须在 0–100% 之间");
+      const retainedImpactPercent = normalizeRetainedImpactPercent(input.retainedImpactPercent ?? 0);
       const impactBudget = retainedImpactBudget(this.impactEligibleIds.size, retainedImpactPercent);
       const planInput = { headerHex, desiredFreeSlots, retainedImpactPercent };
       const planKey = JSON.stringify({ planInput, analysisKey: this.analysisKey });
@@ -914,7 +915,7 @@ export class YuhunWorkflow {
         presetDiscardIds: priority.presetDiscardIds
       });
       const preview = cached === undefined
-        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots, priority === null ? { percent: retainedImpactPercent, ids: this.impactEligibleIds, budget: impactBudget, decisions: this.yuhunDecisions ?? [] } : undefined, priority ?? undefined)
+        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots, { percent: retainedImpactPercent, ids: this.impactEligibleIds, budget: impactBudget, decisions: this.yuhunDecisions ?? [] }, priority ?? undefined)
         : { summary: cached.summary, checklist: cached.checklist };
       if (cached === undefined) {
         this.planCache.set(planKey, { plan, summary: preview.summary, checklist: preview.checklist });
@@ -1059,6 +1060,24 @@ export class YuhunWorkflow {
   }
 
   getGateState(): Readonly<Record<string, boolean>> {
+    const impact = this.planSummary?.retentionImpact;
+    const strategy = this.planSummary?.strategyRetention;
+    const extra = this.planSummary?.cleanupComparison?.extraCleanupCount;
+    const affectedIds = new Set<string>();
+    const affectedByStrategy = new Map<RetentionStrategyId, number>();
+    const verifiedImpact = impact !== undefined && extra !== undefined &&
+      impact.eligibleCount === this.impactEligibleIds.size && impact.percent === normalizeRetainedImpactPercent(impact.percent) &&
+      impact.budget === retainedImpactBudget(impact.eligibleCount, impact.percent) && extra <= impact.budget &&
+      impact.affectedItems.length === extra && impact.affectedItems.every(({ row }) => {
+        const id = this.items?.[row - 1]?.id;
+        if (id === undefined || !this.impactEligibleIds.has(id) || affectedIds.has(id)) return false;
+        affectedIds.add(id);
+        if (this.priorityAnalysis === null) return true;
+        const strategyId = this.yuhunDecisions?.[row - 1]?.retentionStrategyId;
+        if (strategyId === undefined || !this.priorityAnalysis.eligible.get(strategyId)?.has(id)) return false;
+        affectedByStrategy.set(strategyId, (affectedByStrategy.get(strategyId) ?? 0) + 1);
+        return true;
+      });
     return {
       snapshotValid: this.summary !== null,
       targetsAndThresholdsValid: this.analysis !== null,
@@ -1067,10 +1086,8 @@ export class YuhunWorkflow {
       groupLimitValid: this.planSummary !== null && this.planSummary.discardGroupCount <= 60 && this.planSummary.rescueGroupCount <= 60,
       roundtripValid: this.planSummary?.roundtripWarnings.length === 0,
       previewComplete: this.planSummary !== null,
-      // buildDecisionPlan independently verifies every released ID against its protection and tier.
-      retainedItemsProtected: this.planSummary !== null && (this.planSummary.strategyRetention
-        ? this.planSummary.cleanupComparison?.extraCleanupCount === this.planSummary.strategyRetention.releasedCount
-        : (this.planSummary.cleanupComparison?.extraCleanupCount ?? Infinity) <= (this.planSummary.retentionImpact?.budget ?? 0)),
+      retainedItemsProtected: verifiedImpact && (this.priorityAnalysis === null ||
+        (strategy?.releasedCount === extra && strategy?.strategies.every(entry => entry.releasedCount === (affectedByStrategy.get(entry.id) ?? 0)) === true)),
     };
   }
 

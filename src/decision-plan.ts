@@ -32,7 +32,7 @@ export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: Readon
   const supplementItems = baseDiscardIds.size ? items.map(item => baseDiscardIds.has(item.id) ? { ...item, garbage: true } : item) : items;
   const protectedByBaseE = baseRescue ? new Set(matchFilterShare(filterShareFromDraft(baseRescue), items).unionIds) : new Set<string>();
   const supplementalTargets = new Set([...wanted].filter(id => !presetTargets.has(id) && !protectedByBaseE.has(id)));
-  const tiers = priority?.tiers.map(tier => new Set([...tier].filter(id => !protectedByBaseE.has(id))));
+  const tiers = priority?.tiers.map(tier => new Set([...tier].filter(id => eligibleImpact.has(id) && !protectedByBaseE.has(id))));
   const optimized = optimizeDecisionRules(
     supplementItems, supplementalTargets, Math.max(0, requiredRelease - baseDiscardIds.size), eligibleImpact, impactBudget,
     tiers === undefined ? undefined : { tiers, presetRules: [] },
@@ -43,10 +43,9 @@ export function buildDecisionPlan(items: readonly YyxYuhun[], discardIds: Readon
   const preview = previewDrafts(discardDraft, rescueDraft);
   const affected = preview.finalNewDiscardIds.filter(id => !wanted.has(id));
   const allowed = tiers === undefined ? eligibleImpact : new Set(tiers.slice(0, optimized.activeTierCount).flatMap(tier => [...tier]));
-  const allowedCount = tiers === undefined ? impactBudget : allowed.size;
   const cleanupDomain = new Set(domain.filter(item => item.level === 0).map(item => item.id));
   const finalDiscard = new Set(preview.finalNewDiscardIds);
-  if (affected.length > allowedCount || affected.some(id => !allowed.has(id)) || preview.finalNewDiscardIds.some(id => !cleanupDomain.has(id))) throw new Error("双码覆盖验证失败：超出允许影响范围或数量");
+  if (affected.length > impactBudget || affected.some(id => !allowed.has(id)) || preview.finalNewDiscardIds.some(id => !cleanupDomain.has(id))) throw new Error("双码覆盖验证失败：超出允许影响范围或数量");
   if ([...baseDiscardIds].some(id => !finalDiscard.has(id)) || [...presetTargets].some(id => finalDiscard.has(id) !== baseDiscardIds.has(id))) throw new Error("双码覆盖验证失败：额外规则改变了预设清理结果");
   if (preview.incidentalRestoreIds.length) throw new Error("双码覆盖验证失败：恢复了历史弃置御魂");
   const dCount = discardDraft?.groups.length ?? 0, eCount = rescueDraft?.groups.length ?? 0;

@@ -330,31 +330,62 @@ describe("dual-code session persistence", () => {
     expect(restored.plan?.desiredFreeSlotsReached).toBe(true);
     expect(restored.plan?.discardCode).toBeNull();
   });
-  it("persists strategy order and enablement while keeping completed team reports", async () => {
+  it("persists strategy changes atomically and refreshes analysis from existing team reports", async () => {
     legacyEquippedReport();
     const store = newStore();
     await store.restoreLocalSession();
     expect(store.retentionStrategies).toEqual(defaultRetentionStrategies());
     const teamCalculations = store.teamCalculations;
+    const analysis = store.analysis;
     await store.generatePlan();
-    expect(store.plan).not.toBeNull();
-    store.moveRetentionStrategy("new-substat", -1);
-    store.setRetentionStrategyEnabled("equivalent-suit", false);
-    expect(store.teamCalculations).toBe(teamCalculations);
-    expect(store.analysis).toBeNull();
-    expect(store.plan).toBeNull();
-    expect(store.copyAllowed).toBe(false);
+    const plan = store.plan;
+    expect(plan).not.toBeNull();
+    expect(await store.setRetentionStrategies(defaultRetentionStrategies())).toBe(true);
+    expect(store.plan).toBe(plan);
+    expect(store.analysis).toBe(analysis);
+
     const expected = [
       { id: "direct-improvement", enabled: true },
       { id: "new-substat", enabled: true },
       { id: "equivalent-suit", enabled: false }
-    ];
-    await vi.advanceTimersByTimeAsync(150);
+    ] as const;
+    expect(await store.setRetentionStrategies(expected)).toBe(true);
+    expect(store.teamCalculations).toBe(teamCalculations);
+    expect(store.analysis).not.toBeNull();
+    expect(store.analysis).not.toBe(analysis);
+    expect(store.plan).toBeNull();
+    expect(store.copyAllowed).toBe(false);
     expect(saved.session.settings.retentionStrategies).toEqual(expected);
     const restored = newStore();
     await restored.restoreLocalSession();
     expect(restored.retentionStrategies).toEqual(expected);
     expect(restored.teamCalculations).toEqual(teamCalculations);
+    expect(restored.analysis).not.toBeNull();
+    await restored.generatePlan();
+    expect(restored.plan?.strategyRetention?.strategies.map(strategy => strategy.id)).toEqual(expected.map(strategy => strategy.id));
+  });
+  it("retries strategy analysis after a failed update without restoring old codes", async () => {
+    const store = newStore();
+    await store.restoreLocalSession();
+    await store.generatePlan();
+    expect(store.copyAllowed).toBe(true);
+    const analyze = vi.spyOn(YuhunWorkflow.prototype, "analyze").mockImplementationOnce(() => {
+      throw new Error("更新分析失败");
+    });
+    const settings = defaultRetentionStrategies().map(entry => ({ ...entry, enabled: false }));
+    try {
+      expect(await store.setRetentionStrategies(settings)).toBe(false);
+      expect(store.error?.message).toBe("更新分析失败");
+      expect(store.analysis).toBeNull();
+      expect(store.copyAllowed).toBe(false);
+      expect(await store.setRetentionStrategies(settings)).toBe(true);
+      expect(analyze).toHaveBeenCalledTimes(2);
+      expect(store.analysis).not.toBeNull();
+      expect(store.error).toBeNull();
+      expect(store.plan).toBeNull();
+    } finally {
+      analyze.mockRestore();
+    }
   });
   it("invalidates old percentage-based codes while keeping the restored analysis", async () => {
     const first = newStore();
@@ -366,7 +397,69 @@ describe("dual-code session persistence", () => {
     const restored = newStore();
     await restored.restoreLocalSession();
     expect(restored.retentionStrategies).toEqual(defaultRetentionStrategies());
+    expect(restored.retainedImpactPercent).toBe(12.5);
     expect(restored.analysis).not.toBeNull();
+    expect(restored.plan).toBeNull();
+    expect(restored.copyAllowed).toBe(false);
+  });
+  it("persists the percentage cap, passes it to generation and restores a verified capped plan", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    expect(first.retainedImpactPercent).toBe(0);
+    const analysis = first.analysis;
+    await first.generatePlan();
+    expect(first.copyAllowed).toBe(true);
+    first.setRetainedImpactPercent(12.54);
+    expect(first.retainedImpactPercent).toBe(12.5);
+    expect(first.analysis).toBe(analysis);
+    expect(first.plan).toBeNull();
+    expect(first.copyAllowed).toBe(false);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(saved.session.settings.retainedImpactPercent).toBe(12.5);
+    await first.generatePlan();
+    expect(first.plan?.retentionImpact?.percent).toBe(12.5);
+    expect(first.plan?.strategyRetention).toBeDefined();
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.retainedImpactPercent).toBe(12.5);
+    expect(restored.plan?.retentionImpact?.percent).toBe(12.5);
+    expect(restored.copyAllowed).toBe(true);
+    saved = { ...saved, session: { ...saved.session, settings: { ...saved.session.settings, retainedImpactPercent: 2.5 } } };
+    const changed = newStore();
+    await changed.restoreLocalSession();
+    expect(changed.retainedImpactPercent).toBe(2.5);
+    expect(changed.plan).toBeNull();
+    expect(changed.copyAllowed).toBe(false);
+  });
+  it("discards an unbounded priority plan on session restore", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    await first.generatePlan();
+    const { retentionImpact: _removed, ...unboundedPlan } = saved.session.plan!;
+    const { retainedImpactPercent: _absent, ...settings } = saved.session.settings;
+    expect(unboundedPlan.strategyRetention).toBeDefined();
+    saved = { ...saved, session: { ...saved.session, settings, plan: unboundedPlan } };
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.retainedImpactPercent).toBe(0);
+    expect(restored.plan).toBeNull();
+    expect(restored.copyAllowed).toBe(false);
+  });
+  it("does not restore copy permission when the cleanup and impact counts disagree", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    await first.generatePlan();
+    expect(first.copyAllowed).toBe(true);
+    const plan = saved.session.plan!;
+    saved = { ...saved, session: {
+      ...saved.session,
+      plan: { ...plan, cleanupComparison: {
+        ...plan.cleanupComparison!,
+        extraCleanupCount: plan.cleanupComparison!.extraCleanupCount + 1
+      } }
+    } };
+    const restored = newStore();
+    await restored.restoreLocalSession();
     expect(restored.plan).toBeNull();
     expect(restored.copyAllowed).toBe(false);
   });

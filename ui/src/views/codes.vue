@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import ModalTransition from "../components/ModalTransition.vue";
-import { computed, ref, watch } from "vue";
-import { Clipboard, Download, Play, Save, ShieldCheck, Eye, X, LoaderCircle, Search } from "@lucide/vue";
+import { computed, nextTick, ref, watch } from "vue";
+import { ArrowDown, ArrowUp, Clipboard, Download, Play, Save, ShieldCheck, Eye, X, LoaderCircle, Search, Settings2 } from "@lucide/vue";
 import { STAT_LABELS, type PlanSummaryDTO, type InventoryRowDTO, type PageDTO, type StatId } from "../../../src/browser.js";
+import { RETENTION_STRATEGIES, normalizeRetentionStrategies, type RetentionStrategySetting } from "../../../src/retention-strategies.js";
 import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunImage, yuhunDisplayName } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
-import { formatStatValue } from "../number-format.js";
+import { formatStatValue, formatNumber } from "../number-format.js";
 
 const store = useWorkbenchStore();
 const saveOpen = ref(false);
@@ -28,6 +29,88 @@ async function savePlan(): Promise<void> {
   } catch (reason) {
     saveError.value = reason instanceof Error ? reason.message : "保存失败";
   } finally { saving.value = false; }
+}
+const retentionSettingsOpen = ref(false);
+const retentionSettingsSaving = ref(false);
+const retentionSettingsError = ref("");
+const retentionSettingsTrigger = ref<HTMLButtonElement | null>(null);
+const retentionDialog = ref<HTMLFormElement | null>(null);
+const draftStrategies = ref<RetentionStrategySetting[]>([]);
+const retentionStrategyLabels = new Map(RETENTION_STRATEGIES.map(({ id, label }) => [id, label]));
+const hasLegacyPotentialEvidence = computed(() => store.teamCalculations.some(report =>
+  report.entities.some(entity => entity.potentialEvidence?.some(evidence =>
+    evidence.strategy === "upgrade-upper-bound" && evidence.requiresNewSubstat === undefined
+  ))
+));
+
+async function openRetentionSettings(): Promise<void> {
+  draftStrategies.value = normalizeRetentionStrategies(store.retentionStrategies);
+  retentionSettingsError.value = "";
+  retentionSettingsOpen.value = true;
+  await nextTick();
+  retentionDialog.value?.focus();
+}
+
+function closeRetentionSettings(): void {
+  if (!retentionSettingsSaving.value) retentionSettingsOpen.value = false;
+}
+
+async function saveRetentionSettings(): Promise<void> {
+  if (retentionSettingsSaving.value || store.busy) return;
+  retentionSettingsSaving.value = true;
+  retentionSettingsError.value = "";
+  await nextTick();
+  retentionDialog.value?.focus();
+  try {
+    if (await store.setRetentionStrategies(draftStrategies.value)) {
+      retentionSettingsOpen.value = false;
+    } else {
+      retentionSettingsError.value = store.error?.message ?? "策略分析未更新，请重试。";
+    }
+  } finally {
+    retentionSettingsSaving.value = false;
+  }
+}
+
+function setDraftStrategyEnabled(index: number, enabled: boolean): void {
+  draftStrategies.value[index] = { ...draftStrategies.value[index]!, enabled };
+}
+
+async function moveDraftStrategy(index: number, direction: -1 | 1, event: MouseEvent): Promise<void> {
+  const destination = index + direction;
+  const strategies = draftStrategies.value;
+  if (destination < 0 || destination >= strategies.length) return;
+  const button = event.currentTarget as HTMLButtonElement;
+  [strategies[index], strategies[destination]] = [strategies[destination]!, strategies[index]!];
+  await nextTick();
+  const focusTarget = button.disabled
+    ? button.parentElement?.querySelector<HTMLButtonElement>("button:enabled")
+    : button;
+  focusTarget?.focus();
+}
+
+function trapRetentionFocus(event: KeyboardEvent): void {
+  const controls = retentionDialog.value?.querySelectorAll<HTMLElement>("button:enabled, input:enabled");
+  const first = controls?.[0];
+  const last = controls?.[controls.length - 1];
+  const current = document.activeElement;
+  if (!first || !last) {
+    event.preventDefault();
+  } else if (current === retentionDialog.value || current === (event.shiftKey ? first : last)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  }
+}
+
+const impactOpen = ref(false);
+const impactPage = ref(1);
+const impactRows = computed(() => store.plan?.retentionImpact?.affectedItems ?? []);
+const impactPageRows = computed(() => impactRows.value.slice((impactPage.value - 1) * 20, impactPage.value * 20));
+watch(() => store.plan, () => { impactOpen.value = false; impactPage.value = 1; });
+function updateRetainedImpactPercent(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  store.setRetainedImpactPercent(Number(input.value));
+  input.value = String(store.retainedImpactPercent);
 }
 const targetShortfall = computed(() => Math.max(0, (store.plan?.requiredRelease ?? 0) - (store.plan?.finalNewDiscardCount ?? 0)));
 function updateDesiredFreeSlots(event: Event): void {
@@ -98,12 +181,17 @@ function statValue(stat: StatId, value: number | undefined): string {
       <label for="desired-free-slots">预期空位
         <input id="desired-free-slots" type="number" inputmode="numeric" min="0" :max="store.desiredFreeSlotsMaximum" step="100" :value="store.desiredFreeSlots" :disabled="!!store.busy || store.desiredFreeSlotsMaximum === 0" aria-describedby="capacity-target-help" @change="updateDesiredFreeSlots" />
       </label>
+      <label for="retained-impact-percent">保留项允许影响比例
+        <input id="retained-impact-percent" type="number" inputmode="decimal" min="0" max="100" step="0.1" :value="store.retainedImpactPercent" :disabled="!!store.busy" aria-describedby="retained-impact-help" @change="updateRetainedImpactPercent" /> %
+      </label>
+      <span id="retained-impact-help">正常池未锁定六星 +0 保留项共 {{ (store.analysis.impactEligibleCount ?? 0).toLocaleString() }} 件，已排除强化规则命中项。最多额外清理 {{ store.retainedImpactLimit.toLocaleString() }} 件。</span>
       <span id="capacity-target-help">本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件 · 空位目标上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}</span>
-      <span>未命中预置规则的御魂按优先级筛选。空位不足时，低优先级先让步。<RouterLink :to="{ name: 'targets', hash: '#retention' }">调整策略优先级</RouterLink></span>
+      <span>优先级决定让步顺序，比例限制让步总量。</span>
     </div>
     <div class="code-generation-buttons">
+      <button ref="retentionSettingsTrigger" type="button" class="secondary" aria-haspopup="dialog" :disabled="!store.snapshot || !!store.busy" @click="openRetentionSettings"><Settings2 :size="17" aria-hidden="true" />策略设置</button>
       <button v-if="store.plan" class="secondary" :disabled="!store.copyAllowed || !!store.busy || store.planLibraryBusy" @click="openSave"><Save :size="17" />保存方案</button>
-      <button class="primary" :disabled="!store.analysis || !!store.busy || saving" @click="store.generatePlan"><LoaderCircle v-if="store.busy === '正在生成并预演 D/E'" class="spin" :size="17" /><Play v-else :size="17" />{{ store.busy === '正在生成并预演 D/E' ? '正在生成…' : store.plan ? '重新生成并预演' : '生成并预演' }}</button>
+      <button class="primary" :disabled="!store.analysis || !!store.busy || saving" @click="store.generatePlan"><LoaderCircle v-if="store.busy === '正在生成并预演 D/E' || store.busy === '正在更新策略分析'" class="spin" :size="17" /><Play v-else :size="17" />{{ store.busy === '正在生成并预演 D/E' ? '正在生成…' : store.busy === '正在更新策略分析' ? '正在更新分析…' : store.plan ? '重新生成并预演' : '生成并预演' }}</button>
     </div>
   </div>
 
@@ -113,8 +201,13 @@ function statValue(stat: StatId, value: number | undefined): string {
       <span v-if="store.plan.requiredRelease === 0 && store.plan.finalNewDiscardCount > 0">当前库存已满足空位目标，本次仅执行预置方案，预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件。</span>
       <span v-else-if="store.plan.requiredRelease === 0">当前库存已满足空位目标，本次无需弃置。</span>
       <span v-else-if="store.plan.desiredFreeSlotsReached">本次预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件；规则整组执行，可能超过目标。</span>
-      <span v-else>当前方案受规则表达及每码 60 组限制，尚未达到目标。实际清理量以预演为准。</span>
+      <span v-else>当前规则和影响比例上限下，尚未达到空位目标。</span>
       <span>仅标记弃置不会立即增加空位；这里预估的是最终消耗或移除这些御魂后的容量。</span>
+    </div>
+    <div v-if="store.plan.retentionImpact" class="capacity-target-result" data-testid="retained-impact-result" role="status">
+      <strong>实际影响保留项 {{ impactRows.length.toLocaleString() }} 件 / {{ store.plan.retentionImpact.budget.toLocaleString() }} 件额度 · {{ formatNumber(store.plan.retentionImpact.actualPercent, store.displayDecimalPlaces) }}%</strong>
+      <span>设置上限 {{ store.plan.retentionImpact.percent }}% · 强化规则命中项不计入额度。</span>
+      <button v-if="impactRows.length" class="secondary" @click="impactOpen = true; impactPage = 1">查看影响明细</button>
     </div>
     <div v-if="store.plan.capacityProjection && store.plan.cleanupComparison" class="metric-strip six capacity-strip" aria-label="双码预演清理对账">
       <div data-testid="plan-marked-count"><span>标记数量</span><strong>{{ store.plan.cleanupComparison.markedCount.toLocaleString() }}</strong></div>
@@ -179,6 +272,55 @@ function statValue(stat: StatId, value: number | undefined): string {
     </div>
   </template>
   <div v-else class="empty-state"><ShieldCheck :size="32" /><strong>尚未生成双码</strong><span>完成账号分析后，即可生成并预演。</span></div>
+  <ModalTransition :trigger="retentionSettingsTrigger">
+  <div v-if="retentionSettingsOpen" class="modal-backdrop" @click.self="closeRetentionSettings" @keydown.esc.prevent.stop="closeRetentionSettings" @keydown.tab="trapRetentionFocus">
+    <form ref="retentionDialog" class="import-dialog retention-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="retention-settings-title" aria-describedby="retention-settings-help" :aria-busy="retentionSettingsSaving" tabindex="-1" @submit.prevent="saveRetentionSettings">
+      <header>
+        <h2 id="retention-settings-title">策略优先级</h2>
+        <button type="button" class="icon-button" aria-label="关闭策略设置" :disabled="retentionSettingsSaving" @click="closeRetentionSettings"><X :size="18" aria-hidden="true" /></button>
+      </header>
+      <div class="rule-form">
+        <p id="retention-settings-help">从高到低排列。空位不足时，低优先级先让步。</p>
+        <p v-if="hasLegacyPotentialEvidence">旧阵容结果中的未分类御魂继续保留。重新计算阵容后可按策略排序。</p>
+        <ol class="retention-order" role="list">
+          <li v-for="(strategy, index) in draftStrategies" :key="strategy.id" :data-strategy="strategy.id">
+            <label>
+              <span class="tag neutral" :aria-label="`优先级 ${index + 1}`">{{ index + 1 }}</span>
+              <input type="checkbox" :checked="strategy.enabled" :disabled="retentionSettingsSaving || !!store.busy"
+                @change="setDraftStrategyEnabled(index, ($event.target as HTMLInputElement).checked)" />
+              <span>{{ retentionStrategyLabels.get(strategy.id) }}</span>
+            </label>
+            <div class="retention-order-actions">
+              <button type="button" class="icon-button" :aria-label="`上移${retentionStrategyLabels.get(strategy.id)}`"
+                :disabled="index === 0 || retentionSettingsSaving || !!store.busy" @click="moveDraftStrategy(index, -1, $event)"><ArrowUp :size="16" aria-hidden="true" /></button>
+              <button type="button" class="icon-button" :aria-label="`下移${retentionStrategyLabels.get(strategy.id)}`"
+                :disabled="index === draftStrategies.length - 1 || retentionSettingsSaving || !!store.busy" @click="moveDraftStrategy(index, 1, $event)"><ArrowDown :size="16" aria-hidden="true" /></button>
+            </div>
+          </li>
+        </ol>
+        <p v-if="retentionSettingsError" class="inline-warning" role="alert">{{ retentionSettingsError }}</p>
+      </div>
+      <footer>
+        <button type="button" :disabled="retentionSettingsSaving" @click="closeRetentionSettings">{{ retentionSettingsError ? '关闭' : '取消' }}</button>
+        <button class="primary" type="submit" :disabled="retentionSettingsSaving || !!store.busy">
+          <LoaderCircle v-if="retentionSettingsSaving" class="spin" :size="16" aria-hidden="true" /><Save v-else :size="16" aria-hidden="true" />
+          {{ retentionSettingsSaving ? '正在更新分析…' : retentionSettingsError ? '重试' : '保存' }}
+        </button>
+      </footer>
+    </form>
+  </div>
+  </ModalTransition>
+  <ModalTransition>
+  <div v-if="impactOpen" class="modal-backdrop" @click.self="impactOpen = false" @keydown.esc="impactOpen = false">
+    <section class="import-dialog hit-dialog" role="dialog" aria-modal="true" aria-labelledby="impact-title">
+      <header><h2 id="impact-title">额外清理的保留项 · {{ impactRows.length }} 件</h2><button class="icon-button" aria-label="关闭" @click="impactOpen = false"><X :size="18" /></button></header>
+      <div class="table-wrap"><table class="inventory-table"><thead><tr><th>#</th><th>套装</th><th>位置</th><th>主属性</th><th>副属性</th><th>原保留原因</th></tr></thead><tbody>
+        <tr v-for="row in impactPageRows" :key="row.row"><td>{{ row.row }}</td><td>{{ yuhunDisplayName(row.suit) }}</td><td>{{ row.position }} 号</td><td>{{ STAT_LABELS[row.mainStat] }} {{ statValue(row.mainStat, row.mainValue) }}</td><td><div class="inventory-stat-list"><span v-for="stat in row.subStatValues" :key="stat.stat" class="inventory-stat"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ statValue(stat.stat, stat.value) }}</strong></span></div></td><td>{{ (row.reasonTags ?? [row.reason]).join(' / ') }}</td></tr>
+      </tbody></table></div>
+      <div class="pagination"><button :disabled="impactPage <= 1" @click="impactPage--">上一页</button><span>{{ impactPage }} / {{ Math.max(1, Math.ceil(impactRows.length / 20)) }}</span><button :disabled="impactPage * 20 >= impactRows.length" @click="impactPage++">下一页</button></div>
+    </section>
+  </div>
+  </ModalTransition>
   <ModalTransition>
   <div v-if="saveOpen" class="modal-backdrop" @click.self="!saving && (saveOpen = false)" @keydown.esc="!saving && (saveOpen = false)">
     <form class="import-dialog save-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="save-plan-title" @submit.prevent="savePlan">
@@ -222,6 +364,13 @@ function statValue(stat: StatId, value: number | undefined): string {
 <style scoped>
 .code-generation-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
 .code-generation-buttons { display: flex; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.retention-settings-dialog { width: min(460px, 100%); }
+.retention-settings-dialog .rule-form > p:not(.inline-warning) { margin: 0; color: var(--muted); }
+.retention-order { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); background: var(--line); }
+.retention-order li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 5px 10px; background: var(--fc-surface); }
+.retention-order label, .retention-order-actions { display: flex; align-items: center; gap: 8px; }
+.retention-order label { flex: 1; min-height: 34px; }
+.retention-order input { accent-color: var(--green); }
 .save-plan-dialog { width: min(460px, 100%); }
 .capacity-target { display: grid; gap: 7px; flex: 1; min-width: 240px; }
 .capacity-target label { display: flex; align-items: center; gap: 12px; font-weight: 600; }
@@ -229,7 +378,6 @@ function statValue(stat: StatId, value: number | undefined): string {
 .capacity-target > span, .capacity-target-result > span { font-size: 12px; color: var(--muted); line-height: 1.6; }
 .capacity-target-result { display: grid; gap: 5px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; }
 .capacity-target-result.target-unmet { border-left-color: var(--fc-danger, var(--red)); }
-.capacity-target a { color: var(--green); }
 .preset-preview-pool { min-height: 0; }
 .preset-preview-pool .preset-pool-header { min-height: 56px; }
 .strategy-preview { margin-bottom: 18px; }

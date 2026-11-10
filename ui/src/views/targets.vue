@@ -4,8 +4,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { hydrateTargetInspections } from "../hydrate-target-inspections.js";
 import { formatNumber, formatStatValue } from "../number-format.js";
 import {
-  ArrowDown,
-  ArrowUp,
   Check,
   Calculator,
   Circle,
@@ -68,7 +66,6 @@ import {
   type TargetScenePath
 } from "../target-catalog.js";
 import { createBuiltinPresetRules } from "../../../src/builtin-preset.js";
-import { RETENTION_STRATEGIES } from "../../../src/retention-strategies.js";
 import { teamCalculationMeetsTargetScore, teamDifficultyFromLabel, useWorkbenchStore, type ImportedTeamTarget, type PresetRule, type PresetRulePool } from "../store.js";
 import {
   decodeTeamCodeFromQrImage,
@@ -358,12 +355,6 @@ const builtinPreviewPools = (["discard", "enhance"] as const).map(pool => ({
   label: pool === "discard" ? "弃置" : "强化",
   rules: builtinPreviewRules.filter(rule => rule.pool === pool)
 }));
-const retentionStrategyLabels = new Map(RETENTION_STRATEGIES.map(({ id, label }) => [id, label]));
-const hasLegacyPotentialEvidence = computed(() => store.teamCalculations.some(report =>
-  report.entities.some(entity => entity.potentialEvidence?.some(evidence =>
-    evidence.strategy === "upgrade-upper-bound" && evidence.requiresNewSubstat === undefined
-  ))
-));
 const discardPresetRules = computed(() => store.presetRules.filter((rule) => rule.pool === "discard"));
 const enhancePresetRules = computed(() => store.presetRules.filter((rule) => rule.pool === "enhance"));
 const scenePaths = computed<EditableScenePath[]>(() => catalog.value.flatMap((domain) =>
@@ -2259,33 +2250,7 @@ function ruleSummary(rule: PresetRule): string {
     </div>
   </section>
 
-  <section id="retention" class="preset-retention-section" aria-labelledby="retention-title">
-    <div class="section-toolbar unframed">
-      <div>
-        <h2 id="retention-title">策略优先级</h2>
-        <span>空位不足时，低优先级先让步。</span>
-        <span v-if="hasLegacyPotentialEvidence">旧阵容结果中的未分类御魂继续保留。重新计算阵容后可按策略排序。</span>
-      </div>
-    </div>
-    <ol class="retention-order" role="list">
-      <li v-for="(strategy, index) in store.retentionStrategies" :key="strategy.id" :data-strategy="strategy.id">
-        <label>
-          <span class="tag neutral" :aria-label="`优先级 ${index + 1}`">{{ index + 1 }}</span>
-          <input type="checkbox" :checked="strategy.enabled" :disabled="!!store.busy"
-            @change="store.setRetentionStrategyEnabled(strategy.id, ($event.target as HTMLInputElement).checked)" />
-          <span>{{ retentionStrategyLabels.get(strategy.id) }}</span>
-        </label>
-        <div class="retention-order-actions">
-          <button type="button" class="icon-button" :aria-label="`上移${retentionStrategyLabels.get(strategy.id)}`"
-            :disabled="index === 0 || !!store.busy" @click="store.moveRetentionStrategy(strategy.id, -1)"><ArrowUp :size="16" aria-hidden="true" /></button>
-          <button type="button" class="icon-button" :aria-label="`下移${retentionStrategyLabels.get(strategy.id)}`"
-            :disabled="index === store.retentionStrategies.length - 1 || !!store.busy" @click="store.moveRetentionStrategy(strategy.id, 1)"><ArrowDown :size="16" aria-hidden="true" /></button>
-        </div>
-      </li>
-    </ol>
-  </section>
-
-  <section class="preset-retention-section" aria-labelledby="preset-title">
+  <section id="retention" class="preset-retention-section" aria-labelledby="preset-title">
     <div class="section-toolbar unframed"><div><h2 id="preset-title">预置方案</h2><span>{{ store.enabledPresetRules.length }} / {{ store.presetRules.length }} 条已启用 · 未命中预置规则的御魂进入策略筛选</span></div><div class="section-toolbar-actions"><button data-testid="import-yuhun-code" @click="openRuleCodeImporter()"><Import :size="15" />导入规则</button></div></div>
     <div class="builtin-preset">
       <details>
@@ -2766,11 +2731,6 @@ function ruleSummary(rule: PresetRule): string {
 
 <style scoped>
 #retention { scroll-margin-top: calc(var(--topbar) + 64px); }
-.retention-order { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); background: var(--line); }
-.retention-order li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 5px 12px; background: var(--fc-surface); }
-.retention-order label, .retention-order-actions { display: flex; align-items: center; gap: 8px; }
-.retention-order label { flex: 1; min-height: 34px; }
-.retention-order input { accent-color: var(--green); }
 .builtin-preset { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 10px 14px; padding: 10px 13px; margin-bottom: 12px; border: 1px solid var(--line); background: var(--fc-soft); }
 .builtin-preset details { flex: 1 1 270px; min-width: 0; }
 .builtin-preset summary { padding: 7px 0; cursor: pointer; }

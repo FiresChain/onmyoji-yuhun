@@ -36,7 +36,7 @@ workflow.importSnapshot(JSON.parse(data.snapshotText), data.snapshotSha256);
 const analysis = workflow.analyze({ ...session.settings, templateIds: session.settings.templateIds.filter((id): id is "zhaocai-speed" | "scattered-speed" => id === "zhaocai-speed" || id === "scattered-speed"), rules, teamReports: session.teamCalculations });
 assert.equal(analysis.markedDiscardProjection.discardCount, session.analysis?.markedDiscardProjection.discardCount, "重算标记数量与诊断不一致");
 const items = parseGameSnapshot(JSON.parse(data.snapshotText)).items;
-const decisions = buildYuhunDecisionRows(items, rules, session.teamCalculations, session.settings.defaultDisposition);
+const decisions = buildYuhunDecisionRows(items, rules, session.teamCalculations, session.settings.defaultDisposition, session.settings.retentionStrategies);
 const eligible = new Set(items.filter((item, index) => {
   const row = decisions[index]!;
   return row.disposition === "retain" && item.star === 6 && item.level === 0 && !item.lock && !item.garbage && !row.matchedRules?.some(rule => rule.pool === "enhance");

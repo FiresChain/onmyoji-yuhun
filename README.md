@@ -29,6 +29,7 @@ node --import tsx scripts/diagnose-plan-impact.ts /path/to/diagnostics.private.j
 
 `500` 是预期空位，后续数字是允许影响百分比。脚本只在本地计算并输出汇总，
 校验强化规则等严格保护项、去重后的影响额度、历史弃置保护和每码 60 组上限。
+含策略优先级的诊断沿用保存的排序：优先级决定让步顺序，百分比限制所有策略的让步总量。
 不要提交诊断文件或账号派生输出。
 
 ## License

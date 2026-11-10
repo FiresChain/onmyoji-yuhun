@@ -34,7 +34,6 @@ export interface SavedProjectV1 {
     readonly defaultDisposition?: "retain" | "discard";
     readonly desiredFreeSlots?: number;
     readonly retentionStrategies?: readonly RetentionStrategySetting[];
-    /** Legacy preference, superseded by retentionStrategies. */
     readonly retainedImpactPercent?: number;
     readonly budgetPerTenThousand: number;
     readonly staticPolicy: StaticRetentionPolicy;
