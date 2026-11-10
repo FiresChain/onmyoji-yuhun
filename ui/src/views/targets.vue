@@ -4,9 +4,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { hydrateTargetInspections } from "../hydrate-target-inspections.js";
 import { formatNumber, formatStatValue } from "../number-format.js";
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   Calculator,
   Circle,
+  ChevronDown,
   ChevronRight,
   CircleHelp,
   Clipboard,
@@ -64,6 +67,8 @@ import {
   type TargetScene,
   type TargetScenePath
 } from "../target-catalog.js";
+import { createBuiltinPresetRules } from "../../../src/builtin-preset.js";
+import { RETENTION_STRATEGIES } from "../../../src/retention-strategies.js";
 import { teamCalculationMeetsTargetScore, teamDifficultyFromLabel, useWorkbenchStore, type ImportedTeamTarget, type PresetRule, type PresetRulePool } from "../store.js";
 import {
   decodeTeamCodeFromQrImage,
@@ -347,6 +352,18 @@ const ruleSubStatFilters = computed(() => statOptions.flatMap((stat) => {
 const requiredRuleSubStats = computed(() => ruleSubStatFilters.value
   .filter((filter) => filter.requirement === "include")
   .map((filter) => filter.stat));
+const builtinPreviewRules = createBuiltinPresetRules();
+const builtinPreviewPools = (["discard", "enhance"] as const).map(pool => ({
+  pool,
+  label: pool === "discard" ? "弃置" : "强化",
+  rules: builtinPreviewRules.filter(rule => rule.pool === pool)
+}));
+const retentionStrategyLabels = new Map(RETENTION_STRATEGIES.map(({ id, label }) => [id, label]));
+const hasLegacyPotentialEvidence = computed(() => store.teamCalculations.some(report =>
+  report.entities.some(entity => entity.potentialEvidence?.some(evidence =>
+    evidence.strategy === "upgrade-upper-bound" && evidence.requiresNewSubstat === undefined
+  ))
+));
 const discardPresetRules = computed(() => store.presetRules.filter((rule) => rule.pool === "discard"));
 const enhancePresetRules = computed(() => store.presetRules.filter((rule) => rule.pool === "enhance"));
 const scenePaths = computed<EditableScenePath[]>(() => catalog.value.flatMap((domain) =>
@@ -2055,13 +2072,13 @@ function ruleSummary(rule: PresetRule): string {
   const parts = [
     rule.positions.length === 0 ? "全部位置" : `${rule.positions.join("/")} 号位`,
     rule.mainStats.length === 0 ? "主属性不限" : `主属性 ${rule.mainStats.map((stat) => STAT_LABELS[stat]).join("/")}`,
-    rule.requiredSubStats.length === 0 ? "副属性不限" : `副属性含 ${rule.requiredSubStats.map((stat) => STAT_LABELS[stat]).join("+")}`,
     rule.subStatCounts.length === 0 ? "条数不限" : `条数 ${rule.subStatCounts.map((count) => count === "lessThan2" ? "不足2" : count).join("/")}`
   ];
+  if (rule.requiredSubStats.length > 0) parts.push(`副属性含 ${rule.requiredSubStats.map((stat) => STAT_LABELS[stat]).join("+")}`);
   if (rule.filter !== undefined) {
     if (rule.filter.stars.length > 0) parts.push(`${rule.filter.stars.join("/")}星`);
     const excluded = rule.filter.subStats.filter((filter) => filter.requirement === "exclude");
-    if (excluded.length > 0) parts.push(`排除 ${excluded.map((filter) => STAT_LABELS[filter.stat]).join("/")}`);
+    if (excluded.length > 0) parts.push(`副属性排除 ${excluded.map((filter) => STAT_LABELS[filter.stat]).join("/")}`);
     if (rule.filter.levelRanges.length > 0) parts.push(`等级 ${rule.filter.levelRanges.join("/")}`);
     if (rule.filter.intrinsicStats.length > 0) parts.push(`固有 ${rule.filter.intrinsicStats.map((stat) => STAT_LABELS[stat]).join("/")}`);
     if (rule.filter.unknownTypeBits.length > 0 || rule.filter.unknownOptionBits.length > 0) parts.push("含未知字段");
@@ -2242,8 +2259,42 @@ function ruleSummary(rule: PresetRule): string {
     </div>
   </section>
 
-  <section class="preset-retention-section">
-    <div class="section-toolbar unframed"><div><h2>预置方案</h2><span>{{ store.presetRules.length }} 条规则 · 新增后默认启用</span></div><div class="section-toolbar-actions"><button data-testid="import-yuhun-code" @click="openRuleCodeImporter()"><Import :size="15" />导入规则</button><span v-if="store.enabledPresetRules.length > 0" class="tag success-tag">已接入单件决策</span></div></div>
+  <section id="retention" class="preset-retention-section" aria-labelledby="retention-title">
+    <div class="section-toolbar unframed">
+      <div>
+        <h2 id="retention-title">策略优先级</h2>
+        <span>空位不足时，低优先级先让步。</span>
+        <span v-if="hasLegacyPotentialEvidence">旧阵容结果中的未分类御魂继续保留。重新计算阵容后可按策略排序。</span>
+      </div>
+    </div>
+    <ol class="retention-order" role="list">
+      <li v-for="(strategy, index) in store.retentionStrategies" :key="strategy.id" :data-strategy="strategy.id">
+        <label>
+          <span class="tag neutral" :aria-label="`优先级 ${index + 1}`">{{ index + 1 }}</span>
+          <input type="checkbox" :checked="strategy.enabled" :disabled="!!store.busy"
+            @change="store.setRetentionStrategyEnabled(strategy.id, ($event.target as HTMLInputElement).checked)" />
+          <span>{{ retentionStrategyLabels.get(strategy.id) }}</span>
+        </label>
+        <div class="retention-order-actions">
+          <button type="button" class="icon-button" :aria-label="`上移${retentionStrategyLabels.get(strategy.id)}`"
+            :disabled="index === 0 || !!store.busy" @click="store.moveRetentionStrategy(strategy.id, -1)"><ArrowUp :size="16" aria-hidden="true" /></button>
+          <button type="button" class="icon-button" :aria-label="`下移${retentionStrategyLabels.get(strategy.id)}`"
+            :disabled="index === store.retentionStrategies.length - 1 || !!store.busy" @click="store.moveRetentionStrategy(strategy.id, 1)"><ArrowDown :size="16" aria-hidden="true" /></button>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="preset-retention-section" aria-labelledby="preset-title">
+    <div class="section-toolbar unframed"><div><h2 id="preset-title">预置方案</h2><span>{{ store.enabledPresetRules.length }} / {{ store.presetRules.length }} 条已启用 · 未命中预置规则的御魂进入策略筛选</span></div><div class="section-toolbar-actions"><button data-testid="import-yuhun-code" @click="openRuleCodeImporter()"><Import :size="15" />导入规则</button></div></div>
+    <div class="builtin-preset">
+      <details>
+        <summary><strong>高标准筛选</strong><span> · {{ builtinPreviewPools.map(pool => `${pool.rules.length} 条${pool.label}`).join(' / ') }}</span></summary>
+        <p v-for="pool in builtinPreviewPools" :key="pool.pool">{{ pool.label }} · {{ pool.rules.map(rule => rule.label).join('、') }}</p>
+      </details>
+      <button v-if="store.builtinPresetMissingCount > 0" type="button" class="secondary" data-testid="apply-builtin-preset" :disabled="!!store.busy" @click="store.applyBuiltinPreset">添加 {{ store.builtinPresetMissingCount }} 条预设规则</button>
+      <span v-else class="tag success-tag">已添加</span>
+    </div>
     <div class="preset-pools">
       <section class="preset-pool discard-pool" data-rule-pool="discard">
         <header class="preset-pool-header"><div><span>DISCARD</span><h3>弃置规则池</h3><p>匹配的御魂进入弃置候选</p></div><div class="preset-pool-controls"><small>{{ discardPresetRules.filter((rule) => rule.enabled).length }} / {{ discardPresetRules.length }} 已启用</small><div class="preset-pool-actions"><button data-testid="enable-all-discard-rules" :disabled="discardPresetRules.length === 0 || discardPresetRules.every((rule) => rule.enabled)" @click="store.setPresetRulePoolEnabled('discard', true)"><Check :size="14" />全部启用</button><button data-testid="disable-all-discard-rules" :disabled="discardPresetRules.length === 0 || discardPresetRules.every((rule) => !rule.enabled)" @click="store.setPresetRulePoolEnabled('discard', false)"><X :size="14" />全部关闭</button><button class="pool-add" data-testid="add-discard-rule" @click="openRuleCodeImporter('discard')"><Plus :size="16" />添加规则</button></div></div></header>
@@ -2712,3 +2763,17 @@ function ruleSummary(rule: PresetRule): string {
   <PotentialComparison v-if="potentialComparisonTargets" :targets="potentialComparisonTargets" :title="potentialComparisonTitle" :compact="potentialComparisonCompact" reference-title="当前装配御魂" @close="potentialComparisonTargets = null; potentialComparisonCompact = false" />
   </ModalTransition>
 </template>
+
+<style scoped>
+#retention { scroll-margin-top: calc(var(--topbar) + 64px); }
+.retention-order { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); background: var(--line); }
+.retention-order li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 5px 12px; background: var(--fc-surface); }
+.retention-order label, .retention-order-actions { display: flex; align-items: center; gap: 8px; }
+.retention-order label { flex: 1; min-height: 34px; }
+.retention-order input { accent-color: var(--green); }
+.builtin-preset { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 10px 14px; padding: 10px 13px; margin-bottom: 12px; border: 1px solid var(--line); background: var(--fc-soft); }
+.builtin-preset details { flex: 1 1 270px; min-width: 0; }
+.builtin-preset summary { padding: 7px 0; cursor: pointer; }
+.builtin-preset summary span, .builtin-preset p { color: var(--muted); }
+.builtin-preset p { margin: 5px 0 0; line-height: 1.5; }
+</style>

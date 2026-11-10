@@ -1,4 +1,6 @@
 import { matchFilterShare } from "./matcher.js";
+import { canonicalYuhunName } from "./mappings.js";
+import type { RetentionStrategyId, RetentionStrategySetting } from "./retention-strategies.js";
 import type { FilterCriteria, StatId, YuhunFilterShare } from "./types.js";
 import type { TeamCalculationPieceDTO, TeamCalculationReportDTO, TeamCalculationYuhunDTO } from "./team-calculation.js";
 import type { YyxYuhun } from "./yyx.js";
@@ -15,6 +17,8 @@ export interface AnalysisRuleInput {
 
 export interface YuhunPotentialTarget {
   readonly comparisonNote?: string;
+  readonly requiresNewSubstat?: boolean;
+  readonly equivalentSuit?: boolean;
   readonly teamId?: string;
   readonly entityIndex?: number;
   readonly position: number;
@@ -62,6 +66,7 @@ export interface YuhunDecisionRowDTO {
   readonly locked: boolean;
   readonly garbage: boolean;
   readonly disposition: YuhunDecisionDisposition;
+  readonly retentionStrategyId?: RetentionStrategyId;
   readonly reason: string;
   readonly reasonTags?: readonly string[];
   readonly matchedRules?: readonly AnalysisRuleInput[];
@@ -105,7 +110,8 @@ function ruleShare(rule: AnalysisRuleInput): YuhunFilterShare {
 }
 
 function potentialTargetsByItem(
-  reports: readonly TeamCalculationReportDTO[]
+  reports: readonly TeamCalculationReportDTO[],
+  excluded?: ReadonlyMap<string, unknown>
 ): ReadonlyMap<string, readonly YuhunPotentialTarget[]> {
   const result = new Map<string, YuhunPotentialTarget[]>();
   for (const report of reports) {
@@ -126,6 +132,7 @@ function potentialTargetsByItem(
       const improvementEvidence = evidence.filter((entry) => entry.strategy === "upgrade-upper-bound");
       if (improvementEvidence.length === 0) continue;
       for (const entry of improvementEvidence) {
+        if (excluded?.has(entry.yuhunId)) continue;
         const reference = entry.strategy === "candidate-build"
           ? null
           : entry.referenceYuhunId === undefined || entry.referenceYuhunId === null
@@ -133,6 +140,8 @@ function potentialTargetsByItem(
           : entity.pieces.find((item) => item.yuhunId === entry.referenceYuhunId) ?? null;
         const target: YuhunPotentialTarget = {
           ...("comparisonNote" in entry && typeof entry.comparisonNote === "string" ? { comparisonNote: entry.comparisonNote } : {}),
+          ...("requiresNewSubstat" in entry && typeof entry.requiresNewSubstat === "boolean" ? { requiresNewSubstat: entry.requiresNewSubstat } : {}),
+          ...("equivalentSuit" in entry && typeof entry.equivalentSuit === "boolean" ? { equivalentSuit: entry.equivalentSuit } : {}),
           teamId: report.id,
           entityIndex: entity.entityIndex,
           position: entry.position,
@@ -175,7 +184,8 @@ export function buildYuhunDecisionRows(
   items: readonly YyxYuhun[],
   rules: readonly AnalysisRuleInput[],
   teamReports: readonly TeamCalculationReportDTO[],
-  defaultDisposition: YuhunDecisionDisposition = "retain"
+  defaultDisposition: YuhunDecisionDisposition = "retain",
+  retentionStrategies?: readonly RetentionStrategySetting[]
 ): YuhunDecisionRowDTO[] {
   const matches = new Map<string, { discard: string[]; enhance: string[] }>();
   const matchedRules = new Map<string, AnalysisRuleInput[]>();
@@ -189,11 +199,27 @@ export function buildYuhunDecisionRows(
       matches.set(id, entry);
     }
   }
-  const potential = potentialTargetsByItem(teamReports);
+  const potential = potentialTargetsByItem(teamReports, retentionStrategies ? matches : undefined);
   return items.map((item, index): YuhunDecisionRowDTO => {
     const ruleMatch = matches.get(item.id) ?? emptyRuleMatches();
-    const potentialTargets = potential.get(item.id) ?? [];
     const matchedRuleNames = [...ruleMatch.enhance, ...ruleMatch.discard];
+    const potentialTargets = potential.get(item.id) ?? [];
+    let retentionStrategyId: RetentionStrategyId | undefined;
+    let hasPotential = potentialTargets.length > 0;
+    if (retentionStrategies && hasPotential) {
+      const matchedStrategies = new Set<RetentionStrategyId>();
+      let unclassified = false;
+      for (const target of potentialTargets) {
+        if (target.requiresNewSubstat === true) matchedStrategies.add("new-substat");
+        else if (target.requiresNewSubstat === false && target.referenceSuit !== null) {
+          const equivalentSuit = target.equivalentSuit ?? canonicalYuhunName(item.name) !== canonicalYuhunName(target.referenceSuit);
+          matchedStrategies.add(equivalentSuit ? "equivalent-suit" : "direct-improvement");
+        } else unclassified = true;
+      }
+      // Older reports omit the enhancement-state evidence. Keep their items out of quota release.
+      retentionStrategyId = unclassified ? undefined : retentionStrategies.find(strategy => strategy.enabled && matchedStrategies.has(strategy.id))?.id;
+      hasPotential = unclassified || retentionStrategyId !== undefined;
+    }
     let disposition: YuhunDecisionDisposition = "retain";
     let reason: string;
     if (item.lock) {
@@ -202,9 +228,9 @@ export function buildYuhunDecisionRows(
       disposition = "retain";
       reason = ruleMatch.discard.length > 0 ? "弃置捞回" : "强化规则";
     } else if (ruleMatch.discard.length > 0) {
-      disposition = potentialTargets.length > 0 ? "retain" : "discard";
+      disposition = hasPotential ? "retain" : "discard";
       reason = "弃置规则";
-    } else if (potentialTargets.length > 0) {
+    } else if (hasPotential) {
       reason = "阵容提升";
     } else {
       disposition = defaultDisposition;
@@ -225,8 +251,9 @@ export function buildYuhunDecisionRows(
       locked: item.lock,
       garbage: item.garbage,
       disposition,
+      ...(retentionStrategyId === undefined || item.lock ? {} : { retentionStrategyId }),
       reason,
-      reasonTags: [...new Set([reason, ...(potentialTargets.length > 0 ? ["阵容提升"] : [])])],
+      reasonTags: [...new Set([reason, ...(hasPotential ? ["阵容提升"] : [])])],
       matchedRules: matchedRules.get(item.id) ?? [],
       matchedRuleNames,
       potentialTargets

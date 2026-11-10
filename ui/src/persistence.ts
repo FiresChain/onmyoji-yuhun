@@ -17,6 +17,7 @@ import type {
   YuhunDecisionRowDTO
 } from "../../src/browser.js";
 import type { TargetDomain } from "./target-catalog.js";
+import type { RetentionStrategySetting } from "../../src/retention-strategies.js";
 import type { SavedPlan } from "./plan-library.js";
 
 export interface SavedProjectV1 {
@@ -32,6 +33,8 @@ export interface SavedProjectV1 {
     readonly riskTier: "tier0" | "tier1";
     readonly defaultDisposition?: "retain" | "discard";
     readonly desiredFreeSlots?: number;
+    readonly retentionStrategies?: readonly RetentionStrategySetting[];
+    /** Legacy preference, superseded by retentionStrategies. */
     readonly retainedImpactPercent?: number;
     readonly budgetPerTenThousand: number;
     readonly staticPolicy: StaticRetentionPolicy;

@@ -1,6 +1,8 @@
 import { computed, onScopeDispose, ref, shallowRef, watch } from "vue";
 import { defineStore } from "pinia";
-import { DEFAULT_DESIRED_FREE_SLOTS, maximumDesiredFreeSlots, normalizeDesiredFreeSlots, normalizeRetainedImpactPercent, retainedImpactBudget } from "../../src/capacity.js";
+import { DEFAULT_DESIRED_FREE_SLOTS, maximumDesiredFreeSlots, normalizeDesiredFreeSlots } from "../../src/capacity.js";
+import { createBuiltinPresetRules } from "../../src/builtin-preset.js";
+import { defaultRetentionStrategies, normalizeRetentionStrategies, type RetentionStrategyId } from "../../src/retention-strategies.js";
 import type {
   AnalysisSummaryDTO,
   AnalysisRuleInput,
@@ -203,6 +205,21 @@ export interface PresetRule extends PresetRuleInput {
   readonly enabled: boolean;
 }
 
+function builtInPresetRules(): PresetRule[] {
+  return createBuiltinPresetRules().map(({ id, label, pool, criteria }) => ({
+    id,
+    pool,
+    label,
+    suits: [...criteria.types],
+    positions: [...criteria.positions],
+    mainStats: [...criteria.mainStats],
+    requiredSubStats: criteria.subStats.filter(filter => filter.requirement === "include").map(filter => filter.stat),
+    subStatCounts: [...criteria.subStatCounts],
+    filter: criteria,
+    enabled: true
+  }));
+}
+
 const DEFAULT_POLICY: StaticRetentionPolicy = {
   id: "technical-draft-v1",
   confirmed: true,
@@ -252,7 +269,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const teamTargets = ref<ImportedTeamTarget[]>(builtInTeamTargets());
   const teamCalculations = shallowRef<readonly TeamCalculationReportDTO[]>([]);
   const teamCalculationProgress = ref<Record<string, TeamCalculationProgressState>>({});
-  const presetRules = ref<PresetRule[]>([]);
+  const presetRules = ref<PresetRule[]>(builtInPresetRules());
+  const retentionStrategies = ref(defaultRetentionStrategies());
   const plan = ref<PlanSummaryDTO | null>(null);
   const savedPlans = shallowRef<readonly SavedPlan[]>([]);
   const planLibraryBusy = ref(false);
@@ -287,11 +305,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   let warningWasVisible = false;
   let notificationFromInbox = false;
   const desiredFreeSlotsPreference = ref(DEFAULT_DESIRED_FREE_SLOTS);
-  const retainedImpactPercent = ref(0);
-  const retainedImpactLimit = computed(() => retainedImpactBudget(analysis.value?.impactEligibleCount ?? 0, retainedImpactPercent.value));
-  const desiredFreeSlotsMaximum = computed(() => maximumDesiredFreeSlots(analysis.value?.markedDiscardProjection.discardCount ?? 0));
+  const cleanupCandidateCount = computed(() => (analysis.value?.markedDiscardProjection.discardCount ?? 0) + (analysis.value?.strategyEligibleCount ?? 0));
+  const desiredFreeSlotsMaximum = computed(() => maximumDesiredFreeSlots(cleanupCandidateCount.value));
   const desiredFreeSlots = computed(() => analysis.value === null ? desiredFreeSlotsPreference.value
-    : normalizeDesiredFreeSlots(desiredFreeSlotsPreference.value, analysis.value.markedDiscardProjection.discardCount));
+    : normalizeDesiredFreeSlots(desiredFreeSlotsPreference.value, cleanupCandidateCount.value));
   const requiredReleaseForTarget = computed(() => analysis.value === null ? 0
     : Math.max(0, analysis.value.inventoryCapacity.totalCount + desiredFreeSlots.value - analysis.value.inventoryCapacity.capacity));
   const budgetPerTenThousand = ref(1);
@@ -605,6 +622,12 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   const enabledTeamTargets = computed(() => teamTargets.value.filter((target) => target.enabled));
   const enabledTeamMetricCount = computed(() => enabledTeamTargets.value.reduce((sum, target) => sum + target.metricCount, 0));
   const enabledPresetRules = computed(() => presetRules.value.filter((rule) => rule.enabled));
+  const missingBuiltinPresetRules = computed(() => builtInPresetRules().filter((builtIn) =>
+    !presetRules.value.some((rule) => rule.id === builtIn.id || (
+      rule.pool === builtIn.pool && rule.filter !== undefined && JSON.stringify(rule.filter) === JSON.stringify(builtIn.filter)
+    ))
+  ));
+  const builtinPresetMissingCount = computed(() => missingBuiltinPresetRules.value.length);
 
   function analysisRules(): AnalysisRuleInput[] {
     return enabledPresetRules.value.map((rule) => {
@@ -778,7 +801,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         templateIds: templateIds.value,
         defaultDisposition: defaultDisposition.value,
         desiredFreeSlots: desiredFreeSlotsPreference.value,
-        retainedImpactPercent: retainedImpactPercent.value,
+        retentionStrategies: retentionStrategies.value,
         riskTier: riskTier.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
@@ -833,7 +856,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   watch(
-    [snapshot, templateIds, riskTier, defaultDisposition, desiredFreeSlotsPreference, retainedImpactPercent, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
+    [snapshot, templateIds, riskTier, defaultDisposition, desiredFreeSlotsPreference, retentionStrategies, budgetPerTenThousand, staticPolicy, existingFilterCode, teamTargets, presetRules, inventory, analysis, decisions, yuhunDecisions, teamCalculations, teamCalculationProgress, teamCalculationPaused, plan, simulation, checklist, actuals, gateState, targetViewState],
     scheduleSessionPersist,
     { deep: true }
   );
@@ -848,7 +871,6 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       snapshotNeedsPersist = true;
       snapshot.value = imported;
       desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
-      retainedImpactPercent.value = 0;
       teamCalculations.value = [];
       teamCalculationProgress.value = {};
       teamCalculationPaused.value = false;
@@ -898,7 +920,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
       riskTier.value = stored.session.settings.riskTier;
       defaultDisposition.value = stored.session.settings.defaultDisposition ?? "discard";
       desiredFreeSlotsPreference.value = stored.session.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
-      retainedImpactPercent.value = normalizeRetainedImpactPercent(stored.session.settings.retainedImpactPercent ?? 0);
+      retentionStrategies.value = normalizeRetentionStrategies(stored.session.settings.retentionStrategies);
+      const savedStrategies = stored.session.settings.retentionStrategies;
+      const sameStrategies = Array.isArray(savedStrategies) && savedStrategies.length === retentionStrategies.value.length
+        && retentionStrategies.value.every((entry, index) => savedStrategies[index]?.id === entry.id && savedStrategies[index]?.enabled === entry.enabled);
       budgetPerTenThousand.value = stored.session.settings.budgetPerTenThousand;
       staticPolicy.value = { ...stored.session.settings.staticPolicy };
       existingFilterCode.value = stored.session.settings.existingFilterCode;
@@ -947,6 +972,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
           riskTier: riskTier.value,
           budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
           rules: analysisRules(),
+          retentionStrategies: normalizeRetentionStrategies(retentionStrategies.value),
           teamReports: teamCalculations.value
         });
         decisions.value = await client.queryDecisions({
@@ -964,13 +990,11 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         yuhunDecisions.value = stored.session.yuhunDecisions ?? null;
         yuhunDecisionFacets.value = null;
       }
-      // The saved plan and its gates belong to the snapshot verified above.
-      // A fresh Worker has no generated plan, so its initial gates cannot
-      // replace the completed codec round-trip and preview checks.
-      plan.value = stored.session.plan ?? null;
+      // Reuse the completed gates only when the snapshot and strategy settings match.
+      plan.value = sameStrategies ? stored.session.plan ?? null : null;
       simulation.value = plan.value === null ? null : stored.session.simulation ?? null;
       checklist.value = plan.value === null ? null : stored.session.checklist ?? null;
-      actuals.value = { ...stored.session.actuals };
+      actuals.value = plan.value === null ? {} : { ...stored.session.actuals };
       gateState.value = plan.value === null
         ? await client.getGateState()
         : { ...stored.session.gateState };
@@ -1124,6 +1148,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         riskTier: riskTier.value,
         budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
         rules: analysisRules(),
+        retentionStrategies: normalizeRetentionStrategies(retentionStrategies.value),
         teamReports: performanceReports,
         diagnostics: teamCalculationSchedulerDebugEnabled.value
       }, (value) => { progress.value = value; });
@@ -1759,6 +1784,30 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     notice.value = `${input.pool === "discard" ? "弃置" : "强化"}规则已保存并默认启用`;
   }
 
+  function applyBuiltinPreset(): void {
+    const missing = missingBuiltinPresetRules.value;
+    if (missing.length === 0) return;
+    presetRules.value = [...presetRules.value, ...missing];
+    invalidateAnalysisResults();
+    notice.value = `已添加 ${missing.length} 条高标准筛选规则`;
+  }
+
+  function setRetentionStrategyEnabled(id: RetentionStrategyId, enabled: boolean): void {
+    if (!retentionStrategies.value.some(strategy => strategy.id === id && strategy.enabled !== enabled)) return;
+    retentionStrategies.value = retentionStrategies.value.map(strategy => strategy.id === id ? { ...strategy, enabled } : strategy);
+    invalidateAnalysisResults();
+  }
+
+  function moveRetentionStrategy(id: RetentionStrategyId, direction: -1 | 1): void {
+    const next = [...retentionStrategies.value];
+    const index = next.findIndex(strategy => strategy.id === id);
+    const destination = index + direction;
+    if (index < 0 || destination < 0 || destination >= next.length) return;
+    [next[index], next[destination]] = [next[destination]!, next[index]!];
+    retentionStrategies.value = next;
+    invalidateAnalysisResults();
+  }
+
   function setPresetRuleEnabled(id: string, enabled: boolean): void {
     const rule = presetRules.value.find((item) => item.id === id);
     if (rule === undefined || rule.enabled === enabled) return;
@@ -1793,17 +1842,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     invalidateAnalysisResults();
   }
 
-  function setRetainedImpactPercent(next: number): void {
-    if (busy.value !== null || analysis.value === null) return;
-    const normalized = normalizeRetainedImpactPercent(next);
-    if (normalized === retainedImpactPercent.value) return;
-    retainedImpactPercent.value = normalized;
-    invalidateGeneratedPlan();
-  }
-
   function setDesiredFreeSlots(next: number): void {
     if (busy.value !== null || analysis.value === null) return;
-    const normalized = normalizeDesiredFreeSlots(next, analysis.value.markedDiscardProjection.discardCount);
+    const normalized = normalizeDesiredFreeSlots(next, cleanupCandidateCount.value);
     if (desiredFreeSlots.value === normalized) return;
     desiredFreeSlotsPreference.value = normalized;
     invalidateGeneratedPlan();
@@ -1863,12 +1904,13 @@ export const useWorkbenchStore = defineStore("workbench", () => {
   }
 
   async function generatePlan(): Promise<void> {
+    const generation = analysisGeneration;
     const userId = yuhunUserId.value;
     begin("正在生成并预演 D/E");
     plan.value = null;
     gateState.value = {};
     try {
-      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value, desiredFreeSlots: desiredFreeSlots.value, retainedImpactPercent: retainedImpactPercent.value });
+      const generated: GeneratedPlanDTO = await client.generatePlan({ staticPolicy: staticPolicy.value, desiredFreeSlots: desiredFreeSlots.value });
       const encode = (draft: NonNullable<GeneratedPlanDTO["discardDraft"]>) => encodeYuhunDraft({ planKind: draft.planKind, groups: draft.groups, ...(userId === null ? {} : { id: userId }) });
       const [discard, rescue] = await Promise.all([
         generated.discardDraft === null ? Promise.resolve(null) : encode(generated.discardDraft),
@@ -1890,6 +1932,8 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         const canonical = (share: typeof decoded) => filterShareFromDraft({ headerHex: share.headerHex, planKind: share.planKind === "discard" ? "discard" : "enhance", groups: share.groups.map(group => ({ name: group.name, criteria: group.criteria })) });
         if (decoded.warnings.length || decoded.planKind !== expected.planKind || JSON.stringify(canonical(decoded)) !== JSON.stringify(expected)) throw new Error("编码往返不一致，不能使用本次双码");
       }
+      const [nextChecklist, nextGateState] = await Promise.all([client.buildImportChecklist(), client.getGateState()]);
+      if (generation !== analysisGeneration || userId !== yuhunUserId.value) return;
       plan.value = {
         ...generated.summary,
         groups: generated.summary.groups.map(group => {
@@ -1899,11 +1943,11 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         discardCode: discard?.yuhunCode ?? null,
         rescueCode: rescue?.yuhunCode ?? null
       };
-      checklist.value = await client.buildImportChecklist();
+      checklist.value = nextChecklist;
       simulation.value = null;
       actuals.value = {};
-      gateState.value = await client.getGateState();
-      notice.value = "双码已完成编码往返、严格保留项及允许影响额度验证；请按预演数量在游戏中核对";
+      gateState.value = nextGateState;
+      notice.value = "双码已完成验证，请按预演数量在游戏中核对";
       await persistSessionNow();
     } catch (reason) {
       fail(reason);
@@ -2021,7 +2065,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         templateIds: templateIds.value,
         riskTier: riskTier.value,
         desiredFreeSlots: desiredFreeSlotsPreference.value,
-        retainedImpactPercent: retainedImpactPercent.value,
+        retentionStrategies: retentionStrategies.value,
         budgetPerTenThousand: budgetPerTenThousand.value,
         staticPolicy: staticPolicy.value,
         defaultDisposition: defaultDisposition.value
@@ -2046,7 +2090,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     budgetPerTenThousand.value = project.settings.budgetPerTenThousand;
     staticPolicy.value = project.settings.staticPolicy;
     desiredFreeSlotsPreference.value = project.settings.desiredFreeSlots ?? DEFAULT_DESIRED_FREE_SLOTS;
-    retainedImpactPercent.value = normalizeRetainedImpactPercent(project.settings.retainedImpactPercent ?? 0);
+    retentionStrategies.value = normalizeRetentionStrategies(project.settings.retentionStrategies);
     staticPolicy.value = { ...staticPolicy.value, confirmed: true };
     teamTargets.value = builtInTeamTargets();
     nextTeamTargetId = 1;
@@ -2218,7 +2262,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     teamCalculations.value = [];
     teamCalculationProgress.value = {};
     nextTeamTargetId = 1;
-    presetRules.value = [];
+    presetRules.value = builtInPresetRules();
     nextPresetRuleId = 1;
     plan.value = null;
     simulation.value = null;
@@ -2231,7 +2275,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     staticPolicy.value = { ...DEFAULT_POLICY };
     defaultDisposition.value = "discard";
     desiredFreeSlotsPreference.value = DEFAULT_DESIRED_FREE_SLOTS;
-    retainedImpactPercent.value = 0;
+    retentionStrategies.value = defaultRetentionStrategies();
     sessionReady = true;
     restoreCompleted.value = true;
     notice.value = "内存会话和本机自动保存已清空";
@@ -2244,7 +2288,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
 
   return {
     snapshot, analysis, inventory, decisions, yuhunDecisions, yuhunDecisionFacets, teamTargets, teamCalculations, teamCalculationProgress, enabledTeamTargets, enabledTeamMetricCount,
-    presetRules, enabledPresetRules,
+    presetRules, enabledPresetRules, builtinPresetMissingCount, retentionStrategies,
     plan, simulation, checklist, mobileHandoff,
     gateState, actuals, targetViewState, targetCatalog, sceneDataImportRevision, templateIds, riskTier, budgetPerTenThousand, staticPolicy, existingFilterCode,
     busy, restoring, restoreCompleted, progress, error, notice, teamCalculationPaused, copyAllowed, reconciliationComplete,
@@ -2257,9 +2301,9 @@ export const useWorkbenchStore = defineStore("workbench", () => {
     initializeNotifications, tickWarningReading, confirmTestWarning, confirmDataSharing, setDataSharingConsent, openNotifications, viewNotification, reviewTestWarning, openFeedback, closeNotifications,
     restoreLocalSession, calculateTeamTargets, pauseTeamCalculation, resumeTeamCalculation, resetTeamCalculations, teamCalculationOptionsForResume, teamCalculationFor, teamCalculationProgressFor, inspectTeamTarget, inspectStoredTeamTarget, addInspectedTeamTarget,
     setTeamTargetEnabled, setTeamTargetGroupEnabled, moveTeamTarget, removeTeamTarget,
-    savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule,
+    savePresetRule, setPresetRuleEnabled, setPresetRulePoolEnabled, removePresetRule, applyBuiltinPreset, setRetentionStrategyEnabled, moveRetentionStrategy,
     invalidatePolicy, confirmPolicy, setTeamCalculationResourceProfile, setCustomTeamCalculationWorkerCount, setTeamCalculationSchedulerDebugEnabled, clearTeamCalculationSchedulerDebugLog,
-    defaultDisposition, setDefaultDisposition, yuhunUserId, importYuhunUserId, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, retainedImpactPercent, retainedImpactLimit, setRetainedImpactPercent, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
+    defaultDisposition, setDefaultDisposition, yuhunUserId, importYuhunUserId, desiredFreeSlots, desiredFreeSlotsMaximum, requiredReleaseForTarget, setDesiredFreeSlots, setRiskTier, setTargetViewState, setTemplateIds, invalidateHeader,
     generatePlan, runSimulation, cancelSimulation, copyCode, downloadCode, saveLocal, loadLocal, exportProject, exportSceneData, importSceneData, exportHandoff,
     importHandoff, exportDecisionsCsv, exportReconciliationCsv, clearSession, deleteProject, clearPerformanceRecords, loadPublishedTeamTargets
   };

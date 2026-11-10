@@ -18,6 +18,16 @@ export interface ReleaseNotification {
 
 // Add new releases at the beginning with a new, stable version identifier.
 export const RELEASE_NOTIFICATIONS: readonly ReleaseNotification[] = [{
+  version: "2026.11.10.1",
+  date: "2026-11-10",
+  title: "预置整理与策略优先级",
+  changes: [
+    "目标与策略新增高标准筛选预置方案和保留策略排序；已有会话可添加预置规则。",
+    "预置规则先执行，未覆盖御魂再优化；清理空位不足时，低优先级策略先让步。",
+    "双码预演展示预置覆盖和各策略保留、让步数量，并改进散件比较及套装、位置规则合并。",
+    "旧版双码需重新生成；旧阵容结果中未分类的潜力项继续保留，重新计算阵容后可参与优先级优化。"
+  ]
+}, {
   version: "2026.09.21.1",
   date: "2026-09-21",
   title: "保留项允许影响比例",

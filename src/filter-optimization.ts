@@ -1,9 +1,10 @@
 import { canonicalYuhunName, STAT_LABELS } from "./mappings.js";
 import { compileFilterCriteria } from "./matcher.js";
-import type { FilterCriteria, IntrinsicStatId, StatId, SubStatCount } from "./types.js";
+import { MAX_FILTER_GROUPS, MAX_FILTER_GROUP_NAME_CODE_POINTS } from "./rules.js";
+import type { FilterCriteria, IntrinsicStatId, StatId, SubStatCount, YuhunFilterDraftGroup } from "./types.js";
 import type { YyxYuhun } from "./yyx.js";
+import type { AnalysisRuleInput } from "./yuhun-decision.js";
 
-const GROUP_LIMIT = 60;
 const STATS = Object.keys(STAT_LABELS) as StatId[];
 const baseCriteria = (): FilterCriteria => ({
   types: [], positions: [], stars: [6], levelRanges: ["0-2"], mainStats: [],
@@ -14,6 +15,13 @@ interface Rule {
   readonly criteria: FilterCriteria;
   readonly matches: bigint;
   readonly complexity: number;
+  readonly name?: string;
+}
+
+export interface PriorityPlanInput {
+  /** Release order, weakest retention first. Each ID belongs to only one tier. */
+  readonly tiers: readonly ReadonlySet<string>[];
+  readonly presetRules: readonly AnalysisRuleInput[];
 }
 
 interface Selection {
@@ -42,13 +50,13 @@ function words(mask: bigint, length: number): Uint32Array {
   return result;
 }
 
-function selectRules(candidates: readonly Rule[], target: bigint, quota = Infinity): Selection {
+function selectRules(candidates: readonly Rule[], target: bigint, quota: number, limit: number): Selection {
   const length = Math.ceil(target.toString(16).length / 8);
   const uncovered = words(target, length);
   const remaining = candidates.map(rule => ({ rule, coverage: words(rule.matches & target, length) }));
   const rules: Rule[] = [];
   let matches = 0n, total = 0;
-  while (rules.length < GROUP_LIMIT && total < quota) {
+  while (rules.length < limit && total < quota) {
     let bestIndex = -1, bestGain = 0;
     const required = quota - total;
     for (let i = 0; i < remaining.length; i++) {
@@ -97,22 +105,23 @@ function prepareBudgetCandidates(candidates: readonly Rule[], targets: bigint, a
 }
 
 /** Counts the union of final affected retain items, never per-rule duplicate hits. */
-function selectWithBudget(prepared: ReturnType<typeof prepareBudgetCandidates>, budget: number, quota: number, penalty: number): Selection {
+function selectWithBudget(prepared: ReturnType<typeof prepareBudgetCandidates>, budget: number, quota: number, penalty: number, limit: number, allowLossOnly = false): Selection {
   const uncovered = prepared.targets.slice(), unspent = prepared.affected.slice();
   const remaining = [...prepared.rules];
   const rules: Rule[] = [];
   let matches = 0n, total = 0, spent = 0;
-  while (rules.length < GROUP_LIMIT && total < quota) {
+  while (rules.length < limit && total < quota) {
     let best = -1, bestGood = 0, bestLoss = 0, bestScore = -1;
     for (let i = 0; i < remaining.length; i++) {
       const entry = remaining[i]!;
       let good = 0, loss = 0;
       for (const word of entry.good) good += popcount(word.value & uncovered[word.index]!);
       for (const word of entry.loss) loss += popcount(word.value & unspent[word.index]!);
-      if (!good || spent + loss > budget) continue;
+      const gain = good + loss;
+      if (!(allowLossOnly ? gain : good) || spent + loss > budget) continue;
       const finishes = total + good + loss >= quota;
       const bestFinishes = best >= 0 && total + bestGood + bestLoss >= quota;
-      const score = good / (1 + penalty * loss);
+      const score = (allowLossOnly ? gain : good) / (1 + penalty * loss);
       const better = finishes !== bestFinishes ? finishes : finishes
         ? loss < bestLoss || (loss === bestLoss && good < bestGood)
         : score > bestScore || (score === bestScore && loss < bestLoss);
@@ -130,6 +139,30 @@ function selectWithBudget(prepared: ReturnType<typeof prepareBudgetCandidates>, 
   return { rules, matches, count: total };
 }
 
+function addDisjunctions<Key extends "types" | "positions">(
+  source: Iterable<Rule>, key: Key, valid: (matches: bigint) => boolean, add: (rule: Rule) => void
+): void {
+  // Rules with identical remaining conditions can share an OR mask in one
+  // field. Combining multiple fields at once would create cross matches.
+  const groups = new Map<string, { rule: Rule; values: Set<FilterCriteria[Key][number]>; matches: bigint }>();
+  for (const rule of source) {
+    if (!rule.criteria[key].length) continue;
+    const groupKey = JSON.stringify({ ...rule.criteria, [key]: [] });
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = { rule, values: new Set(), matches: 0n };
+      groups.set(groupKey, group);
+    }
+    for (const value of rule.criteria[key]) group.values.add(value);
+    group.matches |= rule.matches;
+  }
+  for (const { rule, values, matches } of groups.values()) {
+    if (values.size > rule.criteria[key].length && valid(matches)) {
+      add({ criteria: { ...rule.criteria, [key]: [...values] }, matches, complexity: rule.complexity });
+    }
+  }
+}
+
 function prefer(a: Solution, b: Solution, quota: number): Solution {
   const reachedA = a.discard.count >= quota, reachedB = b.discard.count >= quota;
   if (reachedA !== reachedB) return reachedA ? a : b;
@@ -139,21 +172,29 @@ function prefer(a: Solution, b: Solution, quota: number): Solution {
     return (reachedA ? a.discard.count < b.discard.count : a.discard.count > b.discard.count) ? a : b;
   }
   if (imports(a) !== imports(b)) return imports(a) < imports(b) ? a : b;
-  return a.discard.rules.length + a.rescue.rules.length <= b.discard.rules.length + b.rescue.rules.length ? a : b;
+  const groupCount = (solution: Solution) => solution.discard.rules.length + solution.rescue.rules.length;
+  if (groupCount(a) !== groupCount(b)) return groupCount(a) < groupCount(b) ? a : b;
+  const presetCount = (solution: Solution) => [...solution.discard.rules, ...solution.rescue.rules].filter(rule => rule.name).length;
+  return presetCount(a) >= presetCount(b) ? a : b;
 }
 
 /** Bounded snapshot-only search; every atomic condition uses the preview matcher. */
-export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: ReadonlySet<string>, quota: number, impactIds: ReadonlySet<string> = new Set(), impactBudget = 0): {
-  discard: FilterCriteria[];
-  rescue: FilterCriteria[];
+export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: ReadonlySet<string>, quota: number, impactIds: ReadonlySet<string> = new Set(), impactBudget = 0, priority?: PriorityPlanInput, limits = { discard: MAX_FILTER_GROUPS, rescue: MAX_FILTER_GROUPS }): {
+  discard: YuhunFilterDraftGroup[];
+  rescue: YuhunFilterDraftGroup[];
   cellCount: number;
+  activeTierCount: number;
 } {
+  const selectDiscard = (candidates: readonly Rule[], wanted: bigint) => selectRules(candidates, wanted, quota, limits.discard);
+  const selectRescue = (candidates: readonly Rule[], wanted: bigint) => selectRules(candidates, wanted, Infinity, limits.rescue);
   const domain = items.filter(item => !item.lock && item.star === 6 && item.level <= 2);
   const universe = (1n << BigInt(domain.length)) - 1n;
   let targets = 0n, protectedItems = 0n, historical = 0n, soft = 0n;
   const atoms: Rule[] = [];
   const atomIds = new Map<string, number>();
   const seeds = new Map<string, { ids: number[]; members: bigint }>();
+  const releaseTiers = priority?.tiers.map(() => 0n) ?? [];
+  const tierById = new Map(priority?.tiers.flatMap((tier, index) => [...tier].map(id => [id, index] as const)));
   const atom = (criteria: FilterCriteria): number => {
     const key = JSON.stringify(criteria);
     const existing = atomIds.get(key);
@@ -172,7 +213,11 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
     else if (item.level === 0 && discardIds.has(item.id)) targets |= bit;
     else {
       protectedItems |= bit;
-      if (item.level === 0 && impactIds.has(item.id)) soft |= bit;
+      if (item.level === 0) {
+        if (impactIds.has(item.id)) soft |= bit;
+        const tier = tierById.get(item.id);
+        if (tier !== undefined) releaseTiers[tier] = releaseTiers[tier]! | bit;
+      }
     }
     const subCount = Object.keys(item.subStats).length;
     const parts: FilterCriteria[] = [
@@ -202,14 +247,24 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
     }
     return { criteria, matches, complexity: ids.length };
   };
-  const search = (wanted: bigint, forbidden: bigint, affected = 0n, budget = 0) => {
+  const presets = { discard: [] as Rule[], enhance: [] as Rule[] };
+  for (const preset of priority?.presetRules ?? []) {
+    const { criteria } = preset;
+    if (criteria.stars.length && !criteria.stars.includes(6)) continue;
+    if (criteria.levelRanges.length && !criteria.levelRanges.includes("0-2")) continue;
+    const restricted: FilterCriteria = { ...criteria, stars: [6], levelRanges: ["0-2"] };
+    const matches = atoms[atom(restricted)]!.matches;
+    if (matches) presets[preset.pool].push({ criteria: restricted, matches, complexity: 0, name: preset.label });
+  }
+  const orderedSeeds = [...seeds].sort(([a], [b]) => a.localeCompare(b));
+  const search = (wanted: bigint, forbidden: bigint, affected = 0n, budget = 0, pool: "discard" | "enhance" = "discard") => {
     const valid = (matches: bigint) => !(matches & forbidden) && (!affected || bitCount(matches & affected) <= budget);
     const exact = new Map<bigint, Rule>(), merged = new Map<bigint, Rule>();
     const add = (map: Map<bigint, Rule>, ids: readonly number[], matches: bigint) => {
       const previous = map.get(matches);
       if (!previous || previous.complexity > ids.length) map.set(matches, rule(ids, matches));
     };
-    for (const [, seed] of [...seeds].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [, seed] of orderedSeeds) {
       if (!(seed.members & wanted)) continue;
       const initial = intersect(seed.ids);
       if (!valid(initial)) continue;
@@ -229,10 +284,17 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
         add(merged, ids, matches);
       }
     }
+    const addRule = (candidate: Rule) => {
+      const previous = merged.get(candidate.matches);
+      if (!previous || previous.complexity > candidate.complexity) merged.set(candidate.matches, candidate);
+    };
+    addDisjunctions([...exact.values(), ...merged.values()], "types", valid, addRule);
+    addDisjunctions([...exact.values(), ...merged.values()], "positions", valid, addRule);
+    for (const preset of presets[pool]) if ((preset.matches & wanted) && valid(preset.matches)) addRule(preset);
     return { exact: [...exact.values()], merged: [...merged.values()] };
   };
   const empty: Selection = { rules: [], matches: 0n, count: 0 };
-  if (!targets || quota === 0) return { discard: [], rescue: [], cellCount: seeds.size };
+  if ((!targets && !releaseTiers.some(Boolean)) || quota === 0 || limits.discard === 0) return { discard: [], rescue: [], cellCount: seeds.size, activeTierCount: 0 };
   const originalTargets = targets, originalProtected = protectedItems;
   const safe = search(targets, protectedItems);
   // A target indistinguishable from a retained item cannot be discarded by
@@ -241,28 +303,28 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
   protectedItems |= targets & ~separable;
   targets = separable;
   let best = prefer(
-    { discard: selectRules(safe.exact, targets, quota), rescue: empty },
-    { discard: selectRules(safe.merged, targets, quota), rescue: empty },
+    { discard: selectDiscard(safe.exact, targets), rescue: empty },
+    { discard: selectDiscard(safe.merged, targets), rescue: empty },
     quota
   );
   if (best.discard.count < quota && (targets & ~best.discard.matches) !== 0n && protectedItems) {
     // E cannot match a target or any previous discard. D may then expand only
     // into the retained region covered by those independently safe E rules.
-    const rescue = selectRules(search(protectedItems, targets | historical).merged, protectedItems);
+    const rescue = selectRescue(search(protectedItems, targets | historical, 0n, 0, "enhance").merged, protectedItems);
     if (rescue.matches) {
       const expanded = search(targets, protectedItems & ~rescue.matches);
-      const discard = selectRules(expanded.merged, targets, quota);
+      const discard = selectDiscard(expanded.merged, targets);
       const needed = discard.matches & protectedItems;
-      const prunedRescue = selectRules(rescue.rules, needed);
+      const prunedRescue = selectRescue(rescue.rules, needed);
       if ((needed & ~prunedRescue.matches) === 0n) best = prefer(best, { discard, rescue: prunedRescue }, quota);
     }
   }
-  if (best.discard.count < quota && impactBudget > 0 && soft) {
+  if (priority === undefined && best.discard.count < quota && impactBudget > 0 && soft) {
     // Start with the zero-impact result; relaxation must improve it. E never
     // restores historical discards. Previously inseparable target classes
     // rescued by the zero-impact solution are excluded from release counts.
     const hard = originalProtected & ~soft;
-    const rescue = selectRules(search(originalProtected, originalTargets | historical).merged, originalProtected);
+    const rescue = selectRescue(search(originalProtected, originalTargets | historical).merged, originalProtected);
     const loss = (solution: Solution) => bitCount(solution.discard.matches & ~solution.rescue.matches & soft);
     const consider = (candidate: Solution) => {
       const reached = candidate.discard.count >= quota, bestReached = best.discard.count >= quota;
@@ -290,9 +352,9 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
         const trial = (budget: number): Solution => {
           const previous = trials.get(budget);
           if (previous) return previous;
-          const discard = selectWithBudget(candidates, budget, quota, penalty);
+          const discard = selectWithBudget(candidates, budget, quota, penalty, limits.discard);
           const needed = discard.matches & protection.matches & (originalProtected | originalTargets);
-          const pruned = selectRules(protection.rules, needed);
+          const pruned = selectRescue(protection.rules, needed);
           const candidate = (needed & ~pruned.matches) === 0n ? { discard, rescue: pruned } : { discard: empty, rescue: empty };
           trials.set(budget, candidate);
           consider(candidate);
@@ -314,9 +376,63 @@ export function optimizeDecisionRules(items: readonly YyxYuhun[], discardIds: Re
       }
     }
   }
+  let activeTierCount = 0;
+  let weakerTiers = 0n;
+  if (Number.isFinite(quota)) for (const [index, activeTier] of releaseTiers.entries()) {
+    if (best.discard.count >= quota) break;
+    if (!activeTier) continue;
+    activeTierCount = index + 1;
+    const allowed = weakerTiers | activeTier;
+    const hard = originalProtected & ~allowed;
+    const rescue = selectRescue(search(hard, originalTargets | allowed | historical, 0n, 0, "enhance").merged, hard);
+    const losses = (solution: Solution, tier: bigint) => bitCount(solution.discard.matches & ~solution.rescue.matches & tier);
+    const consider = (candidate: Solution) => {
+      const reached = candidate.discard.count >= quota;
+      const bestReached = best.discard.count >= quota;
+      if (reached !== bestReached || (!reached && candidate.discard.count !== best.discard.count)) {
+        if (candidate.discard.count > best.discard.count) best = candidate;
+        return;
+      }
+      for (let i = index; i >= 0; i--) {
+        const delta = losses(candidate, releaseTiers[i]!) - losses(best, releaseTiers[i]!);
+        if (delta < 0) best = candidate;
+        if (delta !== 0) return;
+      }
+      best = prefer(best, candidate, quota);
+    };
+    const protections = new Map([empty, best.rescue, rescue].map(protection => [protection.matches, protection]));
+    for (const protection of protections.values()) {
+      const affected = activeTier & ~protection.matches;
+      const maxBudget = bitCount(affected);
+      const free = (originalTargets | weakerTiers) & ~protection.matches;
+      const candidates = search(free | affected, hard & ~protection.matches, affected, maxBudget).merged;
+      const prepared = prepareBudgetCandidates(candidates, free, affected);
+      for (const penalty of [0, 0.5, 2, 8]) {
+        let lower = 0, upper = maxBudget;
+        let budget = maxBudget;
+        for (let trial = 0; lower <= upper && trial < 9; trial++) {
+          const discard = selectWithBudget(prepared, budget, quota, penalty, limits.discard, true);
+          const needed = discard.matches & protection.matches & (originalProtected | originalTargets);
+          const pruned = selectRescue(protection.rules, needed);
+          if ((needed & ~pruned.matches) !== 0n) break;
+          const candidate = { discard, rescue: pruned };
+          consider(candidate);
+          if (discard.count >= quota) upper = losses(candidate, activeTier) - 1;
+          else lower = budget + 1;
+          budget = Math.floor((lower + upper) / 2);
+        }
+      }
+    }
+    weakerTiers = allowed;
+  }
+  const groups = (rules: readonly Rule[], kind: "discard" | "rescue"): YuhunFilterDraftGroup[] => rules.map(({ criteria, name }, index) => ({
+    criteria,
+    name: name && Array.from(name).length <= MAX_FILTER_GROUP_NAME_CODE_POINTS ? name : `${kind === "discard" ? "D" : "E"}${String(MAX_FILTER_GROUPS - limits[kind] + index + 1).padStart(2, "0")}|${kind === "discard" ? "清理" : "保留"}`
+  }));
   return {
-    discard: best.discard.rules.map(rule => rule.criteria),
-    rescue: best.rescue.rules.map(rule => rule.criteria),
-    cellCount: seeds.size
+    discard: groups(best.discard.rules, "discard"),
+    rescue: groups(best.rescue.rules, "rescue"),
+    cellCount: seeds.size,
+    activeTierCount
   };
 }

@@ -6,7 +6,7 @@ import { STAT_LABELS, type PlanSummaryDTO, type InventoryRowDTO, type PageDTO, t
 import YuhunConditionEditor from "../components/YuhunConditionEditor.vue";
 import { yuhunImage, yuhunDisplayName } from "../manual-target-config.js";
 import { useWorkbenchStore } from "../store.js";
-import { formatStatValue, formatNumber } from "../number-format.js";
+import { formatStatValue } from "../number-format.js";
 
 const store = useWorkbenchStore();
 const saveOpen = ref(false);
@@ -29,16 +29,6 @@ async function savePlan(): Promise<void> {
     saveError.value = reason instanceof Error ? reason.message : "保存失败";
   } finally { saving.value = false; }
 }
-const impactOpen = ref(false);
-const impactPage = ref(1);
-const impactRows = computed(() => store.plan?.retentionImpact?.affectedItems ?? []);
-const impactPageRows = computed(() => impactRows.value.slice((impactPage.value - 1) * 20, impactPage.value * 20));
-watch(() => store.plan, () => { impactOpen.value = false; impactPage.value = 1; });
-function updateRetainedImpactPercent(event: Event): void {
-  const input = event.target as HTMLInputElement;
-  store.setRetainedImpactPercent(Number(input.value));
-  input.value = String(store.retainedImpactPercent);
-}
 const targetShortfall = computed(() => Math.max(0, (store.plan?.requiredRelease ?? 0) - (store.plan?.finalNewDiscardCount ?? 0)));
 function updateDesiredFreeSlots(event: Event): void {
   const input = event.target as HTMLInputElement;
@@ -51,7 +41,13 @@ const codePools = computed(() => ([
 ]));
 const poolLabels = { normal: "正常池", "new-garbage": "新弃置池", "historical-garbage": "历史弃置池", combined: "合并弃置池" };
 type PreviewGroup = PlanSummaryDTO["groups"][number];
-const viewedRule = ref<PreviewGroup | null>(null);
+type PresetPreviewRule = NonNullable<PlanSummaryDTO["presetCoverage"]>["rules"][number];
+const presetPools = computed(() => (["discard", "enhance"] as const).map(pool => ({
+  pool,
+  title: pool === "discard" ? "预设弃置规则" : "预设强化规则",
+  rules: store.plan?.presetCoverage?.rules.filter(rule => rule.pool === pool) ?? []
+})));
+const viewedRule = ref<PreviewGroup | PresetPreviewRule | null>(null);
 const hitRule = ref<PreviewGroup | null>(null);
 const hitPool = ref<PreviewGroup["pool"]>("normal");
 const hitSearch = ref("");
@@ -102,12 +98,8 @@ function statValue(stat: StatId, value: number | undefined): string {
       <label for="desired-free-slots">预期空位
         <input id="desired-free-slots" type="number" inputmode="numeric" min="0" :max="store.desiredFreeSlotsMaximum" step="100" :value="store.desiredFreeSlots" :disabled="!!store.busy || store.desiredFreeSlotsMaximum === 0" aria-describedby="capacity-target-help" @change="updateDesiredFreeSlots" />
       </label>
-      <label for="retained-impact-percent">保留项允许影响
-        <input id="retained-impact-percent" type="number" inputmode="decimal" min="0" max="100" step="0.1" :value="store.retainedImpactPercent" :disabled="!!store.busy" aria-describedby="retained-impact-help" @change="updateRetainedImpactPercent" /> %
-      </label>
-      <span id="retained-impact-help">非强化规则保留的未锁定六星 +0 御魂共 {{ (store.analysis.impactEligibleCount ?? 0).toLocaleString() }} 件，最多允许额外清理 {{ (store.retainedImpactLimit ?? 0).toLocaleString() }} 件；仅在空位不足时使用。</span>
-      <span id="capacity-target-help">清理后希望保留的总空位；本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件。上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}（严格小于标记数的最大整百数）。</span>
-      <span v-if="store.desiredFreeSlotsMaximum === 0">标记不超过 100 件，整百目标为 0；若背包已超容，仍会尝试清理超出部分。</span>
+      <span id="capacity-target-help">本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件 · 空位目标上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}</span>
+      <span>未命中预置规则的御魂按优先级筛选。空位不足时，低优先级先让步。<RouterLink :to="{ name: 'targets', hash: '#retention' }">调整策略优先级</RouterLink></span>
     </div>
     <div class="code-generation-buttons">
       <button v-if="store.plan" class="secondary" :disabled="!store.copyAllowed || !!store.busy || store.planLibraryBusy" @click="openSave"><Save :size="17" />保存方案</button>
@@ -118,15 +110,11 @@ function statValue(stat: StatId, value: number | undefined): string {
   <template v-if="store.plan">
     <div v-if="store.plan.desiredFreeSlots !== undefined" class="capacity-target-result" role="status" :class="{ 'target-unmet': !store.plan.desiredFreeSlotsReached }">
       <strong>预期空位 {{ store.plan.desiredFreeSlots.toLocaleString() }} · {{ store.plan.desiredFreeSlotsReached ? '预演达标' : `尚差 ${targetShortfall.toLocaleString()} 件清理` }}</strong>
-      <span v-if="store.plan.requiredRelease === 0">当前库存已满足空位目标，本次无需弃置。</span>
+      <span v-if="store.plan.requiredRelease === 0 && store.plan.finalNewDiscardCount > 0">当前库存已满足空位目标，本次仅执行预置方案，预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件。</span>
+      <span v-else-if="store.plan.requiredRelease === 0">当前库存已满足空位目标，本次无需弃置。</span>
       <span v-else-if="store.plan.desiredFreeSlotsReached">本次预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件；规则整组执行，可能超过目标。</span>
       <span v-else>当前方案受规则表达及每码 60 组限制，尚未达到目标。实际清理量以预演为准。</span>
       <span>仅标记弃置不会立即增加空位；这里预估的是最终消耗或移除这些御魂后的容量。</span>
-    </div>
-    <div v-if="store.plan.retentionImpact" class="capacity-target-result" role="status">
-      <strong>实际影响保留项 {{ impactRows.length.toLocaleString() }} 件 / {{ store.plan.retentionImpact.budget.toLocaleString() }} 件额度 · {{ formatNumber(store.plan.retentionImpact.actualPercent, store.displayDecimalPlaces) }}%</strong>
-      <span>设置上限 {{ store.plan.retentionImpact.percent }}% · 强化规则保留项继续严格保护。</span>
-      <button v-if="impactRows.length" class="secondary" @click="impactOpen = true; impactPage = 1">查看影响明细</button>
     </div>
     <div v-if="store.plan.capacityProjection && store.plan.cleanupComparison" class="metric-strip six capacity-strip" aria-label="双码预演清理对账">
       <div data-testid="plan-marked-count"><span>标记数量</span><strong>{{ store.plan.cleanupComparison.markedCount.toLocaleString() }}</strong></div>
@@ -137,6 +125,37 @@ function statValue(stat: StatId, value: number | undefined): string {
       <div data-testid="plan-capacity-after-free"><span>应用后空位</span><strong>{{ store.plan.capacityProjection.after.overCapacityCount > 0 ? `超出 ${store.plan.capacityProjection.after.overCapacityCount.toLocaleString()}` : store.plan.capacityProjection.after.freeSlots.toLocaleString() }}</strong></div>
     </div>
     <div v-if="store.plan.cleanupComparison && store.plan.cleanupComparison.affectedCount > 0" class="inline-warning cleanup-difference-note">未纳入方案 {{ store.plan.cleanupComparison.missedMarkedCount.toLocaleString() }} 件 · 额外清理 {{ store.plan.cleanupComparison.extraCleanupCount.toLocaleString() }} 件。达到空位目标即可，无需清理全部标记。</div>
+    <section v-if="store.plan.presetCoverage?.rules.length" aria-labelledby="preset-preview-title">
+      <div class="section-toolbar unframed">
+        <div>
+          <h2 id="preset-preview-title">预置方案命中</h2>
+          <span>覆盖 {{ store.plan.presetCoverage.coveredCount.toLocaleString() }} 件 · 未覆盖 {{ store.plan.presetCoverage.uncoveredCount.toLocaleString() }} 件（正常池未锁定六星 +0）</span>
+          <span v-if="store.plan.presetCoverage.blockedDiscardCount">有 {{ store.plan.presetCoverage.blockedDiscardCount.toLocaleString() }} 件命中弃置条件，受安全限制未纳入双码。</span>
+        </div>
+      </div>
+      <div class="preset-pools generated-code-pools">
+        <article v-for="pool in presetPools" :key="pool.pool" class="preset-pool preset-preview-pool" :class="{ 'discard-pool': pool.pool === 'discard' }">
+          <header class="preset-pool-header"><div><h3>{{ pool.title }}</h3><p>{{ pool.rules.length }} 条 · 原始条件</p></div></header>
+          <div v-for="rule in pool.rules" :key="rule.id" class="generated-rule">
+            <div class="generated-rule-row">
+              <span class="generated-rule-name"><strong>{{ rule.label }}</strong><small>{{ rule.criteria.types.join(' / ') || '全部御魂套装' }}</small></span>
+              <span class="generated-rule-count">命中 {{ rule.matchedCount.toLocaleString() }} 件</span>
+              <button class="icon-button" type="button" :title="`查看${rule.label}规则`" :aria-label="`查看${rule.label}规则`" @click="viewedRule = rule"><Eye :size="16" aria-hidden="true" /></button>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+    <section v-if="store.plan.strategyRetention" class="strategy-preview" aria-labelledby="strategy-preview-title">
+      <div class="section-toolbar unframed"><div><h2 id="strategy-preview-title">策略优先级结果</h2><span>策略让步共 {{ store.plan.strategyRetention.releasedCount.toLocaleString() }} 件</span></div></div>
+      <div v-if="store.plan.strategyRetention.strategies.length > 0" class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">优先级</th><th scope="col">策略</th><th scope="col">保留</th><th scope="col">让步</th></tr></thead>
+          <tbody><tr v-for="strategy in store.plan.strategyRetention.strategies" :key="strategy.id"><td>{{ strategy.priority }}</td><td>{{ strategy.label }}<small v-if="store.retentionStrategies.some(entry => entry.id === strategy.id && !entry.enabled)"> · 已停用</small></td><td>{{ strategy.retainedCount.toLocaleString() }} 件</td><td>{{ strategy.releasedCount.toLocaleString() }} 件</td></tr></tbody>
+        </table>
+      </div>
+      <div v-else class="preset-empty">未启用保留策略</div>
+    </section>
     <div class="section-toolbar unframed"><div><h2>双码规则</h2></div><span class="tag">只读</span></div>
     <div class="preset-pools generated-code-pools">
       <article v-for="pool in codePools" :key="pool.code" class="preset-pool" :class="{ 'discard-pool': pool.kind === 'discard' }" :aria-label="pool.title">
@@ -161,17 +180,6 @@ function statValue(stat: StatId, value: number | undefined): string {
   </template>
   <div v-else class="empty-state"><ShieldCheck :size="32" /><strong>尚未生成双码</strong><span>完成账号分析后，即可生成并预演。</span></div>
   <ModalTransition>
-  <div v-if="impactOpen" class="modal-backdrop" @click.self="impactOpen = false" @keydown.esc="impactOpen = false">
-    <section class="import-dialog hit-dialog" role="dialog" aria-modal="true" aria-labelledby="impact-title">
-      <header><h2 id="impact-title">额外清理的保留项 · {{ impactRows.length }} 件</h2><button class="icon-button" aria-label="关闭" @click="impactOpen = false"><X :size="18" /></button></header>
-      <div class="table-wrap"><table class="inventory-table"><thead><tr><th>#</th><th>套装</th><th>位置</th><th>主属性</th><th>副属性</th><th>原保留原因</th></tr></thead><tbody>
-        <tr v-for="row in impactPageRows" :key="row.row"><td>{{ row.row }}</td><td>{{ yuhunDisplayName(row.suit) }}</td><td>{{ row.position }} 号</td><td>{{ STAT_LABELS[row.mainStat] }} {{ statValue(row.mainStat, row.mainValue) }}</td><td><div class="inventory-stat-list"><span v-for="stat in row.subStatValues" :key="stat.stat" class="inventory-stat"><small>{{ STAT_LABELS[stat.stat] }}</small><strong>{{ statValue(stat.stat, stat.value) }}</strong></span></div></td><td>{{ (row.reasonTags ?? [row.reason]).join(' / ') }}</td></tr>
-      </tbody></table></div>
-      <div class="pagination"><button :disabled="impactPage <= 1" @click="impactPage--">上一页</button><span>{{ impactPage }} / {{ Math.max(1, Math.ceil(impactRows.length / 20)) }}</span><button :disabled="impactPage * 20 >= impactRows.length" @click="impactPage++">下一页</button></div>
-    </section>
-  </div>
-  </ModalTransition>
-  <ModalTransition>
   <div v-if="saveOpen" class="modal-backdrop" @click.self="!saving && (saveOpen = false)" @keydown.esc="!saving && (saveOpen = false)">
     <form class="import-dialog save-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="save-plan-title" @submit.prevent="savePlan">
       <header><h2 id="save-plan-title">保存方案</h2><button type="button" class="icon-button" aria-label="关闭" :disabled="saving" @click="saveOpen = false"><X :size="18" /></button></header>
@@ -183,9 +191,9 @@ function statValue(stat: StatId, value: number | undefined): string {
   <ModalTransition>
   <div v-if="viewedRule" class="modal-backdrop" @click.self="viewedRule = null" @keydown.esc="viewedRule = null">
     <section class="import-dialog rule-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-rule-title">
-      <header><div><span class="eyebrow">PRESET RULE / {{ viewedRule.code }}</span><h2 id="preview-rule-title">查看{{ viewedRule.code === 'D' ? '弃置' : '捡回' }}规则</h2></div><button class="icon-button" title="关闭" @click="viewedRule = null"><X :size="18" /></button></header>
-      <div class="rule-form"><label class="rule-name"><span>规则名称</span><input :value="viewedRule.name" readonly /></label><YuhunConditionEditor v-if="viewedRule.criteria" :model-value="viewedRule.criteria" readonly /><p v-else class="inline-warning">此方案未保存筛选条件，请重新生成双码后查看详情。</p></div>
-      <footer class="icon-footer"><button class="icon-button" title="查看命中御魂" aria-label="查看命中御魂" @click="viewHits(viewedRule)"><Search :size="16" /></button></footer>
+      <header><div><h2 id="preview-rule-title">{{ 'code' in viewedRule ? (viewedRule.code === 'D' ? '查看弃置规则' : '查看捡回规则') : (viewedRule.pool === 'discard' ? '预设弃置规则' : '预设强化规则') }}</h2></div><button class="icon-button" title="关闭" aria-label="关闭" @click="viewedRule = null"><X :size="18" /></button></header>
+      <div class="rule-form"><label class="rule-name"><span>规则名称</span><input :value="'name' in viewedRule ? viewedRule.name : viewedRule.label" readonly /></label><YuhunConditionEditor v-if="viewedRule.criteria" :model-value="viewedRule.criteria" readonly /><p v-else class="inline-warning">此方案未保存筛选条件，请重新生成双码后查看详情。</p></div>
+      <footer v-if="'code' in viewedRule" class="icon-footer"><button class="icon-button" title="查看命中御魂" aria-label="查看命中御魂" @click="viewHits(viewedRule)"><Search :size="16" /></button></footer>
     </section>
   </div>
   </ModalTransition>
@@ -221,6 +229,12 @@ function statValue(stat: StatId, value: number | undefined): string {
 .capacity-target > span, .capacity-target-result > span { font-size: 12px; color: var(--muted); line-height: 1.6; }
 .capacity-target-result { display: grid; gap: 5px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 6px; }
 .capacity-target-result.target-unmet { border-left-color: var(--fc-danger, var(--red)); }
+.capacity-target a { color: var(--green); }
+.preset-preview-pool { min-height: 0; }
+.preset-preview-pool .preset-pool-header { min-height: 56px; }
+.strategy-preview { margin-bottom: 18px; }
+.strategy-preview th, .strategy-preview td { white-space: nowrap; }
+.strategy-preview small { color: var(--muted); }
 .generated-code-pools { margin-bottom: 18px; align-items: start; }
 .generated-code-value { display: grid; gap: 6px; padding: 12px 13px; border-bottom: 1px solid var(--line); }
 .generated-code-value label { font-size: 10px; color: var(--muted); }

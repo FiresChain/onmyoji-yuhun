@@ -4,7 +4,7 @@ import { nextTick } from "vue";
 import { emptyYuhunFilter } from "../yuhun-filter.js";
 import Codes from "./codes.vue";
 
-const { mockStore } = vi.hoisted(() => ({ mockStore: { plan: null as any, analysis: null as any, gateState: {}, copyAllowed: false, busy: null as string | null, retainedImpactPercent: 0, retainedImpactLimit: 0, setRetainedImpactPercent: vi.fn(), desiredFreeSlots: 500, desiredFreeSlotsMaximum: 2800, requiredReleaseForTarget: 316, setDesiredFreeSlots: vi.fn(), queryPreviewYuhun: vi.fn() } }));
+const { mockStore } = vi.hoisted(() => ({ mockStore: { plan: null as any, analysis: null as any, gateState: {}, retentionStrategies: [], copyAllowed: false, busy: null as string | null, desiredFreeSlots: 500, desiredFreeSlotsMaximum: 2800, requiredReleaseForTarget: 316, setDesiredFreeSlots: vi.fn(), queryPreviewYuhun: vi.fn() } }));
 vi.mock("../store.js", () => ({ useWorkbenchStore: () => mockStore }));
 vi.mock("../manual-target-config.js", () => ({ yuhunImage: () => null, yuhunDisplayName: (name: string) => name, yuhunCategory: () => "其他" }));
 
@@ -13,7 +13,7 @@ describe("generated rule inspection", () => {
     mockStore.analysis = {};
     mockStore.plan = { desiredFreeSlots: 500, requiredRelease: 316, finalNewDiscardCount: 126, desiredFreeSlotsReached: false, groups: [] };
     mockStore.setDesiredFreeSlots.mockImplementation(value => { mockStore.desiredFreeSlots = Math.max(0, Math.min(2800, Math.round(value / 100) * 100)); });
-    const wrapper = mount(Codes);
+    const wrapper = mount(Codes, { global: { stubs: { RouterLink: true } } });
     const input = wrapper.get('#desired-free-slots');
     expect(input.attributes('max')).toBe('2800');
     expect(input.attributes('step')).toBe('100');
@@ -25,21 +25,37 @@ describe("generated rule inspection", () => {
     mockStore.analysis = null;
     mockStore.desiredFreeSlots = 500;
   });
-  it("configures the impact allowance and shows actual affected items with original reasons", async () => {
-    mockStore.analysis = { impactEligibleCount: 100 };
-    mockStore.retainedImpactPercent = 1;
-    mockStore.retainedImpactLimit = 1;
-    mockStore.setRetainedImpactPercent.mockImplementation(value => { mockStore.retainedImpactPercent = value; });
-    mockStore.plan = { groups: [], retentionImpact: { percent: 1, eligibleCount: 100, budget: 1, actualPercent: 1, affectedItems: [{ row: 1, suit: "招财猫", position: 2, mainStat: "speed", mainValue: 12, reason: "阵容提升" }] } };
-    const wrapper = mount(Codes);
-    expect(wrapper.text()).toContain("最多允许额外清理 1 件");
-    expect(wrapper.text()).toContain("实际影响保留项 1 件 / 1 件额度");
-    await wrapper.get('#retained-impact-percent').setValue('2.5');
-    expect(mockStore.setRetainedImpactPercent).toHaveBeenCalledWith(2.5);
-    await wrapper.findAll('button').find(button => button.text() === '查看影响明细')!.trigger('click');
-    const dialog = wrapper.get('[aria-labelledby="impact-title"]');
-    expect(dialog.text()).toContain('招财猫');
-    expect(dialog.text()).toContain('阵容提升');
+  it("shows preset criteria and the strategy results separately from the generated rules", async () => {
+    mockStore.analysis = { strategyEligibleCount: 9 };
+    const criteria = { ...emptyYuhunFilter(), positions: [2], mainStats: ["speed"] };
+    mockStore.plan = {
+      groups: [],
+      presetCoverage: {
+        rules: [
+          { id: "preset-d", label: "二号防御加成", pool: "discard", criteria: emptyYuhunFilter(), matchedCount: 5 },
+          { id: "preset-e", label: "二号双速", pool: "enhance", criteria, matchedCount: 1 }
+        ],
+        coveredCount: 6,
+        uncoveredCount: 9
+      },
+      strategyRetention: {
+        strategies: [{ id: "new-substat", label: "补出新属性潜力", priority: 3, retainedCount: 7, releasedCount: 2 }],
+        releasedCount: 2
+      }
+    };
+    const wrapper = mount(Codes, { global: { stubs: { RouterLink: true, YuhunSuitPicker: true } } });
+    const presets = wrapper.get('[aria-labelledby="preset-preview-title"]');
+    expect(presets.text()).toContain("覆盖 6 件 · 未覆盖 9 件");
+    expect(presets.text()).toContain("命中 5 件");
+    const strategy = wrapper.get('[aria-labelledby="strategy-preview-title"]');
+    expect(strategy.text()).toContain("策略让步共 2 件");
+    expect(strategy.text()).toContain("补出新属性潜力");
+    expect(wrapper.find('#retained-impact-percent').exists()).toBe(false);
+    await presets.get('button[aria-label="查看二号双速规则"]').trigger('click');
+    const dialog = wrapper.get('[aria-labelledby="preview-rule-title"]');
+    expect(dialog.text()).toContain("预设强化规则");
+    expect(dialog.findAll('input[type="checkbox"]').some(input => (input.element as HTMLInputElement).checked)).toBe(true);
+    expect(dialog.findAll('input[type="checkbox"]').every(input => input.element.matches(":disabled"))).toBe(true);
     wrapper.unmount();
     mockStore.analysis = null;
   });
@@ -47,7 +63,7 @@ describe("generated rule inspection", () => {
     const criteria = { ...emptyYuhunFilter(), positions: [2], mainStats: ["speed"], subStats: [{ stat: "crit", requirement: "include" }] };
     mockStore.plan = { discardGroupCount: 1, rescueGroupCount: 0, discardCode: "example", rescueCode: null, groups: [{ code: "D", index: 0, name: "测试规则", pool: "normal", expected: 1, criteria }] };
     mockStore.queryPreviewYuhun.mockResolvedValue({ page: 1, pageSize: 25, total: 1, rows: [{ row: 1, suit: "招财猫", position: 2, star: 6, level: 0, mainStat: "speed", mainValue: 12, subStatValues: [{ stat: "crit", value: .03 }], intrinsicStats: [], garbage: false }] });
-    const wrapper = mount(Codes, { global: { stubs: { YuhunSuitPicker: true } } });
+    const wrapper = mount(Codes, { global: { stubs: { RouterLink: true, YuhunSuitPicker: true } } });
     const ruleButtons = wrapper.findAll('[data-testid="preview-rule-D-0"] .icon-button');
     expect(ruleButtons).toHaveLength(2);
     expect(ruleButtons.every(button => button.text() === "" && button.attributes("aria-label"))).toBe(true);

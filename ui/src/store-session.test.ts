@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { createHash } from "node:crypto";
 import { YuhunWorkflow, filterShareFromDraft, type TeamCalculationReportDTO, type YuhunFilterShare } from "../../src/browser.js";
+import { createBuiltinPresetRules } from "../../src/builtin-preset.js";
+import { defaultRetentionStrategies } from "../../src/retention-strategies.js";
 import type { StoredWorkbenchSessionV1, WorkbenchSessionV1 } from "./persistence.js";
 import { useWorkbenchStore } from "./store.js";
 import { exportPlanFile, parsePlanFile, type SavedPlan } from "./plan-library.js";
@@ -328,31 +330,66 @@ describe("dual-code session persistence", () => {
     expect(restored.plan?.desiredFreeSlotsReached).toBe(true);
     expect(restored.plan?.discardCode).toBeNull();
   });
-  it("persists impact allowance, invalidates codes and defaults legacy sessions to zero", async () => {
+  it("persists strategy order and enablement while keeping completed team reports", async () => {
+    legacyEquippedReport();
     const store = newStore();
     await store.restoreLocalSession();
-    expect(store.retainedImpactPercent).toBe(0);
+    expect(store.retentionStrategies).toEqual(defaultRetentionStrategies());
+    const teamCalculations = store.teamCalculations;
     await store.generatePlan();
-    const analysis = store.analysis;
-    store.setRetainedImpactPercent(2.5);
-    expect(store.analysis).toBe(analysis);
+    expect(store.plan).not.toBeNull();
+    store.moveRetentionStrategy("new-substat", -1);
+    store.setRetentionStrategyEnabled("equivalent-suit", false);
+    expect(store.teamCalculations).toBe(teamCalculations);
+    expect(store.analysis).toBeNull();
     expect(store.plan).toBeNull();
     expect(store.copyAllowed).toBe(false);
+    const expected = [
+      { id: "direct-improvement", enabled: true },
+      { id: "new-substat", enabled: true },
+      { id: "equivalent-suit", enabled: false }
+    ];
     await vi.advanceTimersByTimeAsync(150);
-    expect(saved.session.settings.retainedImpactPercent).toBe(2.5);
+    expect(saved.session.settings.retentionStrategies).toEqual(expected);
     const restored = newStore();
     await restored.restoreLocalSession();
-    expect(restored.retainedImpactPercent).toBe(2.5);
-    await restored.generatePlan();
-    expect(restored.plan?.retentionImpact?.percent).toBe(2.5);
-    expect(restored.plan?.retentionImpact?.affectedItems).toEqual([]);
-    expect(restored.copyAllowed).toBe(true);
+    expect(restored.retentionStrategies).toEqual(expected);
+    expect(restored.teamCalculations).toEqual(teamCalculations);
+  });
+  it("invalidates old percentage-based codes while keeping the restored analysis", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    await first.generatePlan();
+    expect(first.copyAllowed).toBe(true);
+    const { retentionStrategies: _removed, ...legacySettings } = saved.session.settings;
+    saved = { ...saved, session: { ...saved.session, settings: { ...legacySettings, retainedImpactPercent: 12.5 } } };
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.retentionStrategies).toEqual(defaultRetentionStrategies());
+    expect(restored.analysis).not.toBeNull();
+    expect(restored.plan).toBeNull();
+    expect(restored.copyAllowed).toBe(false);
+  });
+  it("adds missing preset rules without replacing edited or custom rules", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    expect(first.presetRules).toHaveLength(0);
+    first.savePresetRule({ pool: "discard", label: "本地规则", suits: [], positions: [3], mainStats: [], requiredSubStats: [], subStatCounts: [] });
+    first.applyBuiltinPreset();
+    const builtIn = createBuiltinPresetRules()[0]!;
+    const rule = first.presetRules.find(item => item.id === builtIn.id)!;
+    first.savePresetRule({ ...rule, label: "已编辑的预设规则" }, rule.id);
+    first.setPresetRuleEnabled(rule.id, false);
+    first.applyBuiltinPreset();
+    expect(first.presetRules).toHaveLength(19);
+    expect(first.presetRules.find(item => item.id === rule.id)).toMatchObject({ label: "已编辑的预设规则", enabled: false });
+    expect(first.presetRules.filter(item => item.source !== undefined)).toEqual([]);
+    expect(first.presetRules.some(item => item.label === "本地规则")).toBe(true);
+    expect(first.builtinPresetMissingCount).toBe(0);
     await vi.advanceTimersByTimeAsync(150);
-    const reopened = newStore();
-    await reopened.restoreLocalSession();
-    expect(reopened.plan?.retentionImpact?.percent).toBe(2.5);
-    reopened.setRetainedImpactPercent(0);
-    expect(reopened.plan).toBeNull();
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.presetRules).toEqual(first.presetRules);
   });
   it("makes startup and route guards await the same restoration", async () => {
     const store = newStore();

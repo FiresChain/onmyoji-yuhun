@@ -12,6 +12,10 @@ export const STEPS = [
 export const router = createRouter({
   // GitHub Pages has no SPA history fallback for project sites.
   history: createWebHashHistory("/onmyoji-yuhun/"),
+  scrollBehavior(to) {
+    if (to.hash === "#retention") return { el: "#retention" };
+    return false;
+  },
   routes: [
     { path: "/", redirect: "/snapshot" },
     ...STEPS.map((step) => ({ path: step.path, name: step.id, component: () => import(`./views/${step.id}.vue`) })),

@@ -34,6 +34,7 @@ import {
 import { STAT_LABELS } from "./mappings.js";
 import type { FilterCriteria, StatId } from "./types.js";
 import { matchFilterShare } from "./matcher.js";
+import { normalizeRetentionStrategies, RETENTION_STRATEGIES, type RetentionStrategyId, type RetentionStrategySetting } from "./retention-strategies.js";
 import { comparePlanCriteria, type PlanCriteria, type PlanDifference, type PlanComparisonFilter, type PlanComparisonResult } from "./plan-comparison.js";
 import { parseGameSnapshot, type SnapshotHeroBase, type YyxYuhun } from "./yyx.js";
 import {
@@ -171,6 +172,7 @@ export interface AnalyzeInput {
   readonly riskTier: RiskTier;
   readonly budgetPerTenThousand?: number;
   readonly rules?: readonly AnalysisRuleInput[];
+  readonly retentionStrategies?: readonly RetentionStrategySetting[];
   readonly teamReports?: readonly TeamCalculationReportDTO[];
   /** Enables privacy-safe phase/counter diagnostics for this analysis run. */
   readonly diagnostics?: boolean;
@@ -227,6 +229,7 @@ export interface AnalysisSummaryDTO {
   readonly inventoryCapacity: InventoryCapacityDTO;
   readonly markedDiscardProjection: CapacityProjectionDTO;
   readonly impactEligibleCount?: number;
+  readonly strategyEligibleCount?: number;
   readonly diagnostics?: AnalysisDiagnosticsDTO;
 }
 
@@ -325,6 +328,26 @@ export interface RetentionImpactDTO {
   readonly affectedItems: readonly Pick<YuhunDecisionRowDTO, "row" | "suit" | "position" | "mainStat" | "mainValue" | "subStatValues" | "reason" | "reasonTags">[];
 }
 
+export interface PresetCoverageDTO {
+  readonly rules: readonly (AnalysisRuleInput & { readonly matchedCount: number })[];
+  /** Union counts across unlocked, nonhistorical six-star +0 items. */
+  readonly coveredCount: number;
+  readonly uncoveredCount: number;
+  readonly blockedDiscardCount?: number;
+}
+
+export interface StrategyRetentionDTO {
+  readonly strategies: readonly {
+    readonly id: RetentionStrategyId;
+    readonly label: string;
+    /** One is the strongest retention priority. */
+    readonly priority: number;
+    readonly retainedCount: number;
+    readonly releasedCount: number;
+  }[];
+  readonly releasedCount: number;
+}
+
 export interface PlanSummaryDTO {
   readonly discardCode: string | null;
   readonly rescueCode: string | null;
@@ -347,6 +370,8 @@ export interface PlanSummaryDTO {
   /** Whether the generated final cleanup reaches the desired capacity target. */
   readonly desiredFreeSlotsReached?: boolean;
   readonly retentionImpact?: RetentionImpactDTO;
+  readonly presetCoverage?: PresetCoverageDTO;
+  readonly strategyRetention?: StrategyRetentionDTO;
   readonly groups: readonly PreviewGroupDTO[];
 }
 
@@ -505,7 +530,8 @@ function previewGroups(
   items: readonly YyxYuhun[],
   markedDiscardIds: ReadonlySet<string>,
   desiredFreeSlots?: number,
-  impact?: { percent: number; ids: ReadonlySet<string>; budget: number; decisions: readonly YuhunDecisionRowDTO[] }
+  impact?: { percent: number; ids: ReadonlySet<string>; budget: number; decisions: readonly YuhunDecisionRowDTO[] },
+  priority?: PriorityAnalysis
 ): {
   summary: PlanSummaryDTO;
   checklist: ImportChecklistDTO;
@@ -528,6 +554,11 @@ function previewGroups(
   appendRescue("historical-garbage", preview.incidentalRestoreMatch);
   appendRescue("combined", preview.rescueMatch);
   const finalDiscardIds = new Set(preview.finalNewDiscardIds);
+  const strategyCounts = priority?.strategies.map(({ id }, index) => {
+    const eligible = priority.eligible.get(id) ?? new Set<string>();
+    const releasedCount = [...eligible].filter(candidate => finalDiscardIds.has(candidate)).length;
+    return { id, label: RETENTION_STRATEGIES.find(strategy => strategy.id === id)!.label, priority: index + 1, retainedCount: eligible.size - releasedCount, releasedCount };
+  });
   const capacityProjection: CapacityProjectionDTO = {
     before: inventoryCapacity(items),
     after: inventoryCapacity(items, finalDiscardIds),
@@ -577,6 +608,13 @@ function previewGroups(
         affectedItems: impact.decisions.filter(row => finalDiscardIds.has(items[row.row - 1]!.id) && impact.ids.has(items[row.row - 1]!.id))
           .map(({ row, suit, position, mainStat, mainValue, subStatValues, reason, reasonTags }) => ({ row, suit, position, mainStat, reason, ...(mainValue === undefined ? {} : { mainValue }), ...(subStatValues === undefined ? {} : { subStatValues }), ...(reasonTags === undefined ? {} : { reasonTags }) }))
       } } : {}),
+      ...(priority && strategyCounts ? {
+        presetCoverage: {
+          ...priority.presetCoverage,
+          blockedDiscardCount: [...priority.presetDiscardIds].filter(id => !finalDiscardIds.has(id)).length
+        },
+        strategyRetention: { strategies: strategyCounts, releasedCount: strategyCounts.reduce((sum, entry) => sum + entry.releasedCount, 0) }
+      } : {}),
       ...(normalizedDesiredFreeSlots === undefined ? {} : {
         desiredFreeSlots: normalizedDesiredFreeSlots,
         requiredRelease: requiredRelease ?? 0,
@@ -592,6 +630,13 @@ function previewGroups(
   };
 }
 
+interface PriorityAnalysis {
+  readonly strategies: readonly RetentionStrategySetting[];
+  readonly eligible: ReadonlyMap<RetentionStrategyId, ReadonlySet<string>>;
+  readonly presetDiscardIds: ReadonlySet<string>;
+  readonly presetCoverage: PresetCoverageDTO;
+}
+
 export class YuhunWorkflow {
   private items: YyxYuhun[] | null = null;
   private heroBases: ReadonlyMap<number, SnapshotHeroBase> = new Map();
@@ -601,6 +646,7 @@ export class YuhunWorkflow {
   private yuhunDecisions: readonly YuhunDecisionRowDTO[] | null = null;
   private markedDiscardIds: ReadonlySet<string> | null = null;
   private impactEligibleIds: ReadonlySet<string> = new Set();
+  private priorityAnalysis: PriorityAnalysis | null = null;
   private decision: SpeedDecisionReport | null = null;
   private decisionInput: Parameters<typeof decideSpeedCategories>[0] | null = null;
   private draftPlan: DecisionPlan | null = null;
@@ -654,24 +700,50 @@ export class YuhunWorkflow {
       const reasonCounts: Record<string, number> = {};
       const baselines: BaselineDTO[] = [];
       const decisionRowsStartedAt = performanceNow();
+      const rules = input.rules ?? [];
+      const retentionStrategies = input.retentionStrategies === undefined ? undefined : normalizeRetentionStrategies(input.retentionStrategies);
       const yuhunDecisions = buildYuhunDecisionRows(
         this.items,
-        input.rules ?? [],
+        rules,
         input.teamReports ?? [],
-        input.defaultDisposition ?? "retain"
+        input.defaultDisposition ?? "retain",
+        retentionStrategies
       );
       this.impactEligibleIds = new Set(yuhunDecisions.flatMap((row, index) =>
         row.disposition === "retain" && row.star === 6 && row.level === 0 && !row.locked && !row.garbage &&
         !(row.matchedRules ?? []).some(rule => rule.pool === "enhance") ? [this.items![index]!.id] : []));
       diagnosticStage("decision-rows", decisionRowsStartedAt);
       for (const row of yuhunDecisions) for (const tag of row.reasonTags ?? [row.reason]) increment(reasonCounts, tag);
-      const markedDiscardIds = new Set(
-        yuhunDecisions.flatMap((row, index) =>
-          row.disposition === "discard" && this.items![index]!.star === 6 && this.items![index]!.level === 0 && !this.items![index]!.lock && !this.items![index]!.garbage
-            ? [this.items![index]!.id]
-            : []
-        )
-      );
+      const markedDiscardIds = new Set<string>();
+      const presetDiscardIds = new Set<string>();
+      const eligible = new Map<RetentionStrategyId, Set<string>>();
+      const ruleCounts = new Map<string, number>();
+      let coveredCount = 0, uncoveredCount = 0, strategyEligibleCount = 0;
+      for (const [index, row] of yuhunDecisions.entries()) {
+        if (row.star !== 6 || row.level !== 0 || row.locked || row.garbage) continue;
+        const { id } = this.items[index]!;
+        if (row.disposition === "discard") markedDiscardIds.add(id);
+        if (retentionStrategies === undefined) continue;
+        if (row.matchedRules?.length) {
+          coveredCount++;
+          if (row.disposition === "discard") presetDiscardIds.add(id);
+          for (const rule of row.matchedRules) ruleCounts.set(rule.id, (ruleCounts.get(rule.id) ?? 0) + 1);
+        } else {
+          uncoveredCount++;
+          if (row.retentionStrategyId !== undefined) {
+            const candidates = eligible.get(row.retentionStrategyId) ?? new Set<string>();
+            candidates.add(id);
+            eligible.set(row.retentionStrategyId, candidates);
+            strategyEligibleCount++;
+          }
+        }
+      }
+      this.priorityAnalysis = retentionStrategies === undefined ? null : {
+        strategies: retentionStrategies,
+        eligible,
+        presetDiscardIds,
+        presetCoverage: { rules: rules.map(rule => ({ ...rule, matchedCount: ruleCounts.get(rule.id) ?? 0 })), coveredCount, uncoveredCount }
+      };
       this.analysis = {
         templates,
         baselines,
@@ -684,7 +756,7 @@ export class YuhunWorkflow {
         tier0CategoryCount: decision.tier0DiscardedCategoryCount,
         tier1CategoryCount: decision.tier1DiscardedCategoryCount,
         reasonCounts,
-        impactEligibleCount: this.impactEligibleIds.size,
+        ...(retentionStrategies === undefined ? { impactEligibleCount: this.impactEligibleIds.size } : { strategyEligibleCount }),
         frequencyBiasNotice: "按当前库存及单件决策生成，不使用速度分类或风险档位。",
         inventoryCapacity: inventoryCapacity(this.items),
         markedDiscardProjection: {
@@ -824,20 +896,25 @@ export class YuhunWorkflow {
       // Matching does not depend on the account ID. This placeholder stays in
       // local semantic drafts; the UI omits it when calling the encode API.
       const headerHex = input.headerHex ?? "00".repeat(16);
+      const priority = this.priorityAnalysis;
       const desiredFreeSlots = input.desiredFreeSlots === undefined ? undefined
-        : normalizeDesiredFreeSlots(input.desiredFreeSlots, this.markedDiscardIds.size);
+        : normalizeDesiredFreeSlots(input.desiredFreeSlots, this.markedDiscardIds.size + (this.analysis?.strategyEligibleCount ?? 0));
       const before = inventoryCapacity(this.items);
       const requiredRelease = desiredFreeSlots === undefined ? undefined
         : Math.max(0, before.totalCount + desiredFreeSlots - before.capacity);
-      if (input.retainedImpactPercent !== undefined && (!Number.isFinite(input.retainedImpactPercent) || input.retainedImpactPercent < 0 || input.retainedImpactPercent > 100)) throw new Error("允许影响比例必须在 0–100% 之间");
-      const retainedImpactPercent = normalizeRetainedImpactPercent(input.retainedImpactPercent ?? 0);
+      if (priority === null && input.retainedImpactPercent !== undefined && (!Number.isFinite(input.retainedImpactPercent) || input.retainedImpactPercent < 0 || input.retainedImpactPercent > 100)) throw new Error("允许影响比例必须在 0–100% 之间");
+      const retainedImpactPercent = priority ? 0 : normalizeRetainedImpactPercent(input.retainedImpactPercent ?? 0);
       const impactBudget = retainedImpactBudget(this.impactEligibleIds.size, retainedImpactPercent);
       const planInput = { headerHex, desiredFreeSlots, retainedImpactPercent };
       const planKey = JSON.stringify({ planInput, analysisKey: this.analysisKey });
       const cached = this.planCache.get(planKey);
-      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex, requiredRelease, this.impactEligibleIds, impactBudget);
+      const plan = cached?.plan ?? buildDecisionPlan(this.items, this.markedDiscardIds, headerHex, requiredRelease, this.impactEligibleIds, impactBudget, priority === null ? undefined : {
+        tiers: priority.strategies.filter(strategy => strategy.enabled).map(({ id }) => priority.eligible.get(id) ?? new Set<string>()).reverse(),
+        presetRules: priority.presetCoverage.rules,
+        presetDiscardIds: priority.presetDiscardIds
+      });
       const preview = cached === undefined
-        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots, { percent: retainedImpactPercent, ids: this.impactEligibleIds, budget: impactBudget, decisions: this.yuhunDecisions ?? [] })
+        ? previewGroups(plan, this.items, this.markedDiscardIds, desiredFreeSlots, priority === null ? { percent: retainedImpactPercent, ids: this.impactEligibleIds, budget: impactBudget, decisions: this.yuhunDecisions ?? [] } : undefined, priority ?? undefined)
         : { summary: cached.summary, checklist: cached.checklist };
       if (cached === undefined) {
         this.planCache.set(planKey, { plan, summary: preview.summary, checklist: preview.checklist });
@@ -990,8 +1067,10 @@ export class YuhunWorkflow {
       groupLimitValid: this.planSummary !== null && this.planSummary.discardGroupCount <= 60 && this.planSummary.rescueGroupCount <= 60,
       roundtripValid: this.planSummary?.roundtripWarnings.length === 0,
       previewComplete: this.planSummary !== null,
-      // buildDecisionPlan independently verifies every affected ID and its budget.
-      retainedItemsProtected: this.planSummary !== null && (this.planSummary.cleanupComparison?.extraCleanupCount ?? Infinity) <= (this.planSummary.retentionImpact?.budget ?? 0),
+      // buildDecisionPlan independently verifies every released ID against its protection and tier.
+      retainedItemsProtected: this.planSummary !== null && (this.planSummary.strategyRetention
+        ? this.planSummary.cleanupComparison?.extraCleanupCount === this.planSummary.strategyRetention.releasedCount
+        : (this.planSummary.cleanupComparison?.extraCleanupCount ?? Infinity) <= (this.planSummary.retentionImpact?.budget ?? 0)),
     };
   }
 
@@ -1004,6 +1083,7 @@ export class YuhunWorkflow {
     this.yuhunDecisions = null;
     this.markedDiscardIds = null;
     this.impactEligibleIds = new Set();
+    this.priorityAnalysis = null;
     this.decision = null;
     this.decisionInput = null;
     this.draftPlan = null;

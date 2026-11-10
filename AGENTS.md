@@ -171,6 +171,10 @@ This is the main configuration surface.
 
 #### Preset Rule Pools
 
+- The built-in high-standard preset contains 12 discard and 6 rescue rules.
+  It stores public conditions only, never the originating account ID or codes.
+  Fresh sessions enable it; existing sessions can add missing preset rules
+  without replacing their own rules or re-enabling rules they disabled.
 - Displays separate discard and enhancement pools. Rules can be enabled,
   disabled in bulk, added, edited, or deleted; enabled rules contribute reasons
   to single-yuhun analysis.
@@ -186,6 +190,22 @@ This is the main configuration surface.
   decodes the recognized code on explicit submission. Loading and failures
   appear inside the dialog. Each condition group becomes one enabled rule,
   preserving supported advanced criteria and the pool encoded in the code.
+
+#### Retention Strategy Priority
+
+- Strategies are ordered from highest to lowest retention priority, with
+  independent enablement and accessible move-up/move-down controls. The initial
+  order is existing-attribute improvement, equivalent-suit potential, then
+  potential requiring a new substat. Settings persist with the private session.
+- Enabled preset rules determine covered items first; rescue wins a
+  discard/rescue overlap. Only inventory matching neither pool enters strategy
+  optimization. A candidate matching multiple enabled strategies belongs to its
+  highest priority, so it is never counted or released twice.
+- When the free-slot target is unmet, generation permits low-priority strategy
+  retention to yield before higher priorities. It stops relaxing once the
+  preview reaches the target. Preset rescue matches and existing hard inventory
+  protections remain protected. Legacy potential evidence without an explicit
+  new-substat classification is conservatively protected until recalculation.
 
 ### 3. Analysis Results (`ui/src/views/analysis.vue`)
 
@@ -206,23 +226,23 @@ This is the main configuration surface.
 
 - The desired free-slot input means final inventory free slots, defaults to 500,
   and is capped at the greatest nonnegative multiple of 100 strictly below the
-  marked-discard count (2831 -> 2800, 1799 -> 1700, 2800 -> 2700). A count of 100
-  or fewer gives a zero target. Changes persist in session/project settings and
+  sum of marked-discard and releasable strategy counts (2831 -> 2800,
+  1799 -> 1700, 2800 -> 2700). A count of 100 or fewer gives a zero target.
+  Changes persist in session/project settings and
   invalidate only the generated plan. The Worker derives the required release
-  from current capacity (including overflow), stops after enough whole safe
-  rules, and reports whether the target was reached. Insufficient coverage does
+  from current capacity (including overflow), applies the safely expressible
+  preset base first, and stops supplemental rules after reaching the quota.
+  It reports whether the target was reached. Insufficient coverage does
   not imply a safety failure; the existing safety gates remain independent.
-- A configurable retained-item impact percentage defaults to 0 and is saved
-  with session/project settings. Its denominator is retained, unlocked,
-  nonhistorical six-star +0 inventory excluding every active enhancement-rule
-  match (including discard/enhancement overlaps). Budgets round down to whole
-  items. Changes invalidate generated plans only. Generation first tries zero
-  impact, then a bounded D/E search with a union-counted final impact budget
-  when the free-slot quota is unmet. Enhancement matches, +1/+2 items, locks,
-  other stars/levels and historical-pool protection remain hard constraints.
-  Preview shows the actual percentage, budget and paginated affected inventory
-  with original retention reasons. Copy gates verify the declared allowance;
-  they still do not guarantee that the capacity target was reached.
+- Priority-based generation replaces the percentage control in the current UI.
+  The legacy percentage input remains available to older core callers. The
+  free-slot limit includes releasable strategy candidates, so it does not
+  prevent a priority search before that search starts.
+- Preview shows enabled preset conditions and their coverage, plus actual
+  retained/released counts by strategy. Preset conditions are adapted to the
+  safe cleanup domain when generating executable rules; the original preset
+  is not permission to discard upgraded items or restore historical discards.
+  Any preset discard matches that cannot be safely expressed are reported.
 - Generation still returns one D/E pair. Multi-round experiments and safe reuse
   of E are documented in the internal research repository, not implemented as
   a multi-round execution UI. E is used to restore items from the discard pool,

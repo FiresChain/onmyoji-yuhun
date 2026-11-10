@@ -254,9 +254,11 @@ export type {
   InventoryRowDTO,
   PageDTO,
   PlanSummaryDTO,
+  PresetCoverageDTO,
   PreviewGroupDTO,
   SimulationSummaryDTO,
   SnapshotSummaryDTO,
+  StrategyRetentionDTO,
   TeamCodeInspectionDTO,
   YuhunDecisionQuery,
   YuhunDecisionFacetsDTO,
@@ -270,3 +272,5 @@ export type {
   YuhunPotentialPieceDTO,
   YuhunPotentialTarget
 } from "./yuhun-decision.js";
+export { defaultRetentionStrategies, normalizeRetentionStrategies, RETENTION_STRATEGIES } from "./retention-strategies.js";
+export type { RetentionStrategyId, RetentionStrategySetting } from "./retention-strategies.js";

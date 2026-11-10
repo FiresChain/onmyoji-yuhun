@@ -167,6 +167,9 @@ export interface TeamCalculationYuhunDTO {
 
 export interface TeamCalculationPotentialEvidenceDTO {
   readonly comparisonNote?: string;
+  /** All valid improving states introduce at least one sub-stat absent from the candidate. */
+  readonly requiresNewSubstat?: boolean;
+  readonly equivalentSuit?: boolean;
   readonly yuhunId: string;
   readonly strategy: YuhunPotentialStrategy;
   readonly position: number;
@@ -674,36 +677,42 @@ function calculatePotentialEvidence(
     const reference = referenceByPosition.get(candidate.position);
     if (reference === undefined) continue;
 
-    // Fixed named requirements are not broadened into effect-equivalent suits.
-    const fixedGroups = target.includedSetGroups.filter(group => group.names.length === 1 && group.intrinsicStat === undefined && group.names.includes(reference.name));
-    if (fixedGroups.length && candidate.name !== reference.name) continue;
-    if (!samePotentialContribution(candidate, reference)) continue;
-    const equivalentPair = candidate.name !== reference.name;
-    // Retain the reference set identity only for scoring the assumed future pair.
-    // The evidence and displayed candidate always keep the real suit name.
-    const comparisonNote = equivalentPair
+    const replacement = bestBuild.map(item => item.id === reference.id ? candidate : item);
+    const fitsRequiredSets = matchesRequiredSetGroups(replacement, target.includedSetGroups);
+    const equivalentPair = candidate.name !== reference.name && samePotentialContribution(candidate, reference);
+    const fixedGroups = target.includedSetGroups.some(group => group.names.length === 1 && group.intrinsicStat === undefined && group.names.includes(reference.name));
+    // A real replacement can change suit whenever the required sets still hold.
+    // Otherwise only the same-effect pair assumption can supply the set bonus.
+    if (!fitsRequiredSets && (!equivalentPair || fixedGroups)) continue;
+    const scoringName = fitsRequiredSets ? candidate.name : reference.name;
+    const scoringPieces = fitsRequiredSets ? replacement : bestBuild.map(item => item.id === reference.id ? { ...candidate, name: scoringName } : item);
+    if (!matchesRequiredSetGroups(scoringPieces, target.includedSetGroups)) continue;
+    const comparisonNote = !fitsRequiredSets
       ? "按相同套装属性或固有属性贡献比较，假设后续可凑齐套装；不是立即换装结果。"
-      : "同套装贡献比较；按最大成长计算潜力，不代表实际强化收益。";
+      : "按候选御魂和最大成长计算潜力，不代表实际强化收益。";
 
     const stateKey = `${candidate.level}|${Object.entries(candidate.subStats).sort(([left], [right]) => left.localeCompare(right)).map(([stat, value]) => `${stat}:${value}`).join(",")}`;
     const states = stateCache.get(stateKey) ?? enumerateMaximumUpgradeStates(candidate);
     stateCache.set(stateKey, states);
     let bestUpperScore: number | null = null;
+    let requiresNewSubstat = true;
     for (const state of states) {
       const upgraded: Yuhun = {
         ...candidate,
-        name: equivalentPair ? reference.name : candidate.name,
+        name: scoringName,
         level: 15,
         mainValue: maximumMainValue(candidate, reference),
         subStats: state.subStats
       };
-      const replacement = bestBuild.map((item) => item.id === reference.id ? upgraded : item);
-      if (!matchesRequiredSetGroups(replacement, target.includedSetGroups)) continue;
-      const panel = cappedPanel(calculatePanel(hero.panel, replacement, target.bonusStats));
+      const upgradedBuild = scoringPieces.map(item => item.id === candidate.id ? upgraded : item);
+      const panel = cappedPanel(calculatePanel(hero.panel, upgradedBuild, target.bonusStats));
       if (!matchesConstraints(panel, effectiveConstraints)) continue;
       const score = calculateIndicator(panel, indicator);
-      if (score > baseline + baselineTolerance && (bestUpperScore === null || score > bestUpperScore)) {
-        bestUpperScore = score;
+      if (score > baseline + baselineTolerance) {
+        bestUpperScore = Math.max(bestUpperScore ?? -Infinity, score);
+        if (requiresNewSubstat && Object.keys(state.subStats).every(stat => Object.hasOwn(candidate.subStats, stat))) {
+          requiresNewSubstat = false;
+        }
       }
     }
     if (bestUpperScore !== null) {
@@ -714,6 +723,8 @@ function calculatePotentialEvidence(
       addPotentialEvidence(evidence, {
         yuhunId: candidate.id,
         strategy: "upgrade-upper-bound",
+        requiresNewSubstat,
+        equivalentSuit: !fitsRequiredSets,
         comparisonNote: `${comparisonNote} 候选现有评分相关副属性：${relevantStats.map(stat => STAT_LABELS[stat as StatId]).join("、") || "无直接增益属性"}（仅辅助说明，不还原初始属性）。`,
         position: candidate.position,
         referenceSuit: reference.name,

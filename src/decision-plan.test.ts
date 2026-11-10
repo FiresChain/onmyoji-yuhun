@@ -5,6 +5,9 @@ import { filterShareFromDraft, previewDualFilterShares, DEFAULT_STATIC_RETENTION
 import { YuhunWorkflow } from "./workflow.js";
 import { YUHUN_TYPES } from "./mappings.js";
 import { calculateCleanupQuota, maximumDesiredFreeSlots, normalizeDesiredFreeSlots } from "./capacity.js";
+import { defaultRetentionStrategies } from "./retention-strategies.js";
+import { calculateTeamTargetBatch, type ManualShikigamiCalculationInput, type TeamCalculationPotentialEvidenceDTO, type TeamCalculationReportDTO } from "./team-calculation.js";
+import { buildYuhunDecisionRows, type AnalysisRuleInput } from "./yuhun-decision.js";
 import type { YyxYuhun } from "./yyx.js";
 
 const header = "00".repeat(16);
@@ -46,25 +49,37 @@ test("safe merging covers more than 60 exact buckets without needing rescue", ()
   assert.equal(plan.rescueDraft, null);
   assert.deepEqual(buildDecisionPlan(items, new Set(wanted), header), plan);
 });
-test("joint search expands D through E protection and respects historical discards", () => {
+test("suit unions preserve ordinary and historical non-targets even above the group limit", () => {
   const keep = item("keep", { name: YUHUN_TYPES[0]! });
   const targets = YUHUN_TYPES.slice(1, 66).map((name, i) => item(`drop${i}`, { name }));
   const wanted = targets.map(item => item.id);
   assert.equal(targets.length, 65);
   const { plan, preview } = run([keep, ...targets], wanted);
   assert.equal(preview.finalNewDiscardIds.length, 65);
-  assert.equal(preview.rescuedFromNewDiscardIds.length, 1);
+  assert.equal(preview.rescuedFromNewDiscardIds.length, 0);
   assert.equal(plan.discardDraft?.groups.length, 1);
-  assert.equal(plan.rescueDraft?.groups.length, 1);
+  assert.equal(plan.discardDraft?.groups[0]?.criteria?.types?.length, 65);
+  assert.equal(plan.rescueDraft, null);
 
   const mixed = run([keep, { ...keep, id: "indistinguishable-target" }, ...targets], [...wanted, "indistinguishable-target"]);
   assert.equal(mixed.preview.finalNewDiscardIds.length, 65);
-  assert.equal(mixed.preview.rescuedFromNewDiscardIds.length, 2);
+  assert.equal(mixed.preview.rescuedFromNewDiscardIds.length, 0);
 
   // E cannot distinguish this old discard from the retained normal item.
   const blocked = run([keep, ...targets, { ...keep, id: "history", garbage: true }], wanted);
-  assert.equal(blocked.preview.finalNewDiscardIds.length, 60);
+  assert.equal(blocked.preview.finalNewDiscardIds.length, 65);
   assert.equal(blocked.plan.rescueDraft, null);
+});
+
+test("position unions retain a protected position without creating new suit-position combinations", () => {
+  const keep = item("keep", { position: 6 });
+  const targets = [item("one", { position: 1 }), item("two", { position: 2 }), item("three", { position: 3 })];
+  const { plan, preview } = run([keep, ...targets], targets.map(target => target.id));
+  assert.deepEqual(preview.finalNewDiscardIds, ["one", "two", "three"]);
+  assert.deepEqual(plan.discardDraft?.groups[0]?.criteria?.positions, [1, 2, 3]);
+  const cross = [item("keep-a", { position: 1 }), item("keep-b", { name: "火灵", position: 2 })];
+  const diagonal = [item("drop-a", { position: 2 }), item("drop-b", { name: "火灵", position: 1 })];
+  assert.deepEqual(run([...cross, ...diagonal], diagonal.map(target => target.id)).preview.finalNewDiscardIds, ["drop-a", "drop-b"]);
 });
 test("boss intrinsic filters separate retained variants and still protect ordinary souls", () => {
   const target = item("boss-drop", { name: "土蜘蛛", intrinsicStats: { crit: .08 } });
@@ -274,4 +289,141 @@ test("workflow validates and reports a nonzero allowance without weakening enhan
   assert.equal(relaxed.retentionImpact?.affectedItems[0]?.reason, "阵容提升");
   assert.equal(workflow.getGateState().retainedItemsProtected, true);
   assert.equal(generate(0).summary.finalNewDiscardCount, 0);
+});
+
+function evidence(yuhunId: string, fields: Partial<TeamCalculationPotentialEvidenceDTO> = {}): TeamCalculationPotentialEvidenceDTO {
+  return { yuhunId, strategy: "upgrade-upper-bound", position: 2, referenceSuit: "招财猫", referenceLevel: 15, statesEvaluated: 1, upperScore: 2, baselineScore: 1, exactEmbryo: false, ...fields };
+}
+
+function reports(...groups: readonly (readonly TeamCalculationPotentialEvidenceDTO[])[]): TeamCalculationReportDTO[] {
+  return groups.map((potentialEvidence, index) => ({
+    id: `team-${index}`, label: "测试阵容", scope: "individual-best", successfulCount: 1, unsupportedCount: 0, entities: [{
+      entityIndex: 0, shikigamiId: null, shikigamiName: "测试式神", metricId: null, metricName: "输出", status: "success", message: "", score: 1, panel: null, pieces: [], exact: true,
+      candidateCount: 1, candidateCombinations: 1, evaluatedCombinations: 1, constraints: [], targetScoreRaw: null, potentialEvidence
+    }]
+  }));
+}
+
+function rule(id: string, pool: AnalysisRuleInput["pool"], label: string, types: string[], levelRanges: ("0-2" | "3-5" | "15")[] = ["0-2", "3-5"]): AnalysisRuleInput {
+  const criteria = filterShareFromDraft({ headerHex: header, planKind: pool, groups: [{ name: label, criteria: { types, levelRanges } }] }).groups[0]!.criteria;
+  return { id, pool, label, criteria };
+}
+
+test("preset D/E decisions precede potential and unmatched items use their highest enabled strategy", () => {
+  const items = [
+    item("overlap", { name: "火灵" }), item("preset-drop", { name: "针女" }),
+    item("multi"), item("legacy"), item("disabled"), item("real", { name: "破势" }), item("equivalent", { name: "火灵" })
+  ];
+  const presetD = rule("d", "discard", "先弃置", ["火灵", "针女"]);
+  const presetE = { ...rule("e", "enhance", "再捞回", ["火灵"]), criteria: { ...presetD.criteria, types: ["火灵"], positions: [2] } };
+  const configured = defaultRetentionStrategies().map(strategy => ({ ...strategy, enabled: strategy.id !== "equivalent-suit" }));
+  const rows = buildYuhunDecisionRows(items, [presetD, presetE], reports([
+    evidence("overlap", { requiresNewSubstat: true }), evidence("preset-drop", { requiresNewSubstat: false }),
+    evidence("multi", { requiresNewSubstat: true }), evidence("legacy"),
+    evidence("disabled", { requiresNewSubstat: false, equivalentSuit: true }),
+    evidence("real", { requiresNewSubstat: false, equivalentSuit: false })
+  ], [evidence("multi", { requiresNewSubstat: false }), evidence("legacy", { requiresNewSubstat: true })]), "discard", configured);
+  assert.equal(rows[0]?.reason, "弃置捞回");
+  assert.equal(rows[1]?.disposition, "discard");
+  assert.equal(rows[1]?.potentialTargets.length, 0);
+  assert.equal(rows[2]?.retentionStrategyId, "direct-improvement");
+  assert.equal(rows[3]?.retentionStrategyId, undefined);
+  assert.equal(rows[3]?.disposition, "retain");
+  assert.equal(rows[4]?.disposition, "discard");
+  assert.equal(rows[5]?.retentionStrategyId, "direct-improvement");
+  const equivalents = buildYuhunDecisionRows([items[6]!], [], reports([evidence("equivalent", { requiresNewSubstat: false, equivalentSuit: true })]), "discard", defaultRetentionStrategies());
+  assert.equal(equivalents[0]?.retentionStrategyId, "equivalent-suit");
+});
+
+test("supplemental release starts only on a shortfall and follows tier order", () => {
+  const items = [
+    item("drop"), item("low-a", { name: "火灵" }), item("low-b", { name: "火灵" }), item("low-single", { name: "针女" }),
+    item("high-a", { name: "破势" }), item("high-b", { name: "破势" }),
+    item("default-keep", { name: "狂骨" }), item("blocked", { name: "树妖" }), item("level-1", { name: "树妖", level: 1 }),
+    item("level-2", { name: "树妖", level: 2 }), item("locked", { lock: true }), item("historical", { garbage: true }),
+    item("low-star", { star: 5 }), item("leveled", { level: 15 })
+  ];
+  const low = new Set(["low-a", "low-b", "low-single", "blocked", "level-1", "level-2", "locked", "historical", "low-star", "leveled"]);
+  const high = new Set(["high-a", "high-b"]);
+  const runPrioritized = (quota: number, tiers: readonly ReadonlySet<string>[]) => {
+    const plan = buildDecisionPlan(items, new Set(["drop"]), header, quota, undefined, 0, { tiers, presetRules: [], presetDiscardIds: new Set() });
+    return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+  };
+  assert.deepEqual(runPrioritized(1, [low, high]).finalNewDiscardIds, ["drop"]);
+  assert.deepEqual(runPrioritized(2, [low, high]).finalNewDiscardIds, ["drop", "low-single"]);
+  assert.deepEqual(runPrioritized(2, [high, low]).finalNewDiscardIds, ["high-a", "high-b"]);
+  const shortfall = runPrioritized(100, [low, high]);
+  assert.deepEqual(shortfall.finalNewDiscardIds, ["drop", "low-a", "low-b", "low-single", "high-a", "high-b"]);
+  assert.deepEqual(shortfall.incidentalRestoreIds, []);
+});
+
+test("preset cleanup remains in the plan at quota zero and reports protected blockers", () => {
+  const workflow = new YuhunWorkflow();
+  const items = [
+    item("preset-drop"), item("overlap", { name: "火灵" }), item("blocked", { name: "针女" }),
+    item("protected", { name: "针女", level: 1 }), item("upgraded", { level: 3 }),
+    item("history", { name: "火灵", garbage: true }), item("supplemental", { name: "破势" })
+  ];
+  Object.assign(workflow, { items });
+  workflow.analyze({
+    templateIds: [], riskTier: "tier1", defaultDisposition: "discard", retentionStrategies: defaultRetentionStrategies(),
+    rules: [rule("d", "discard", "预设清理", ["招财猫", "火灵", "针女"]), rule("e", "enhance", "预设捞回", ["火灵"]), rule("later", "discard", "高等级", ["招财猫"], ["15"])]
+  });
+  const { summary } = workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 0 });
+  assert.equal(summary.requiredRelease, 0);
+  assert.equal(summary.finalNewDiscardCount, 1);
+  assert.equal(summary.incidentalRestoreCount, 0);
+  assert.equal(summary.presetCoverage?.coveredCount, 3);
+  assert.equal(summary.presetCoverage?.uncoveredCount, 1);
+  assert.equal(summary.presetCoverage?.blockedDiscardCount, 1);
+  assert.deepEqual(summary.presetCoverage?.rules.map(entry => entry.matchedCount), [3, 1, 0]);
+  assert.equal(workflow.getGateState().retainedItemsProtected, true);
+});
+
+test("capacity cap includes strategy-retained items and summary reflects final combined releases", () => {
+  const workflow = new YuhunWorkflow();
+  const retained = Array.from({ length: 101 }, (_, index) => item(`eligible-${index}`, { name: "火灵" }));
+  const items = [item("base"), ...retained, ...Array.from({ length: 5898 }, (_, index) => item(`locked-${index}`, { lock: true }))];
+  Object.assign(workflow, { items });
+  const summary = workflow.analyze({
+    templateIds: [], riskTier: "tier1", defaultDisposition: "retain", retentionStrategies: defaultRetentionStrategies(),
+    rules: [rule("d", "discard", "预设清理", ["招财猫"])],
+    teamReports: reports(retained.map(entry => evidence(entry.id, { requiresNewSubstat: true })))
+  });
+  assert.equal(summary.markedDiscardProjection.discardCount, 1);
+  assert.equal(summary.strategyEligibleCount, 101);
+  const plan = workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 100 });
+  assert.equal(plan.summary.desiredFreeSlots, 100);
+  assert.equal(plan.summary.finalNewDiscardCount, 102);
+  assert.equal(plan.summary.desiredFreeSlotsReached, true);
+  assert.equal(plan.summary.strategyRetention?.releasedCount, 101);
+  assert.deepEqual(plan.summary.strategyRetention?.strategies.at(-1), { id: "new-substat", label: "补出新属性潜力", priority: 3, retainedCount: 0, releasedCount: 101 });
+  assert.equal(plan.summary.retentionImpact, undefined);
+  assert.equal(plan.discardDraft?.groups[0]?.name, "预设清理");
+  assert.equal(workflow.getGateState().retainedItemsProtected, true);
+});
+
+test("growth evidence uses any valid improvement without new stat keys and scores real scattered replacements", () => {
+  const references = [1, 2, 3, 4, 5, 6].map(position => item(`reference-${position}`, {
+    name: position <= 4 ? "招财猫" : "针女", position, level: 15, subStats: { attack: 20 }
+  }));
+  const candidates = [
+    item("existing", { name: "木魅", subStats: { attack: 5 } }),
+    item("new-stat", { name: "招财猫", subStats: { crit: .03 } })
+  ];
+  const target: ManualShikigamiCalculationInput = {
+    entityIndex: 0, shikigamiId: 1, shikigamiName: "式神", metricId: 5, suits: [], mainStats: {}, ranges: [],
+    sixStarOnly: true, maxLevelOnly: true, highestStat: null, scope: "all", excludeOccupied: false, targetScore: null
+  };
+  const hero = { id: 1, name: "式神", panel: { attack: 2000, hp: 10000, defense: 500, speed: 110, crit: 0.1, critDamage: 1.5, effectHit: 0, effectResist: 0 } };
+  const calculate = (manual: ManualShikigamiCalculationInput) => calculateTeamTargetBatch(
+    [{ id: "t", label: "队伍", manualTargets: [manual] }], [...references, ...candidates], new Map([[hero.id, hero]])
+  )[0]?.entities[0]?.potentialEvidence?.filter(entry => entry.strategy === "upgrade-upper-bound") ?? [];
+  const byId = new Map(calculate(target).map(entry => [entry.yuhunId, entry]));
+  assert.equal(byId.get("existing")?.requiresNewSubstat, false);
+  assert.equal(byId.get("existing")?.equivalentSuit, false);
+  assert.equal(byId.get("new-stat")?.requiresNewSubstat, true);
+  const fixed = calculate({ ...target, suitRequirements: [{ name: "招财猫", count: 4 }] });
+  assert.equal(fixed.some(entry => entry.yuhunId === "existing"), false);
+  assert.equal(fixed.some(entry => entry.yuhunId === "new-stat"), true);
 });
