@@ -8,6 +8,7 @@ import { calculateCleanupQuota, maximumDesiredFreeSlots, normalizeDesiredFreeSlo
 import { defaultRetentionStrategies } from "./retention-strategies.js";
 import { calculateTeamTargetBatch, type ManualShikigamiCalculationInput, type TeamCalculationPotentialEvidenceDTO, type TeamCalculationReportDTO } from "./team-calculation.js";
 import { buildYuhunDecisionRows, type AnalysisRuleInput } from "./yuhun-decision.js";
+import { createBuiltinPresetRules } from "./builtin-preset.js";
 import type { YyxYuhun } from "./yyx.js";
 
 const header = "00".repeat(16);
@@ -346,7 +347,7 @@ test("supplemental release starts only on a shortfall and follows tier order", (
   const low = new Set(["low-a", "low-b", "low-single", "blocked", "level-1", "level-2", "locked", "historical", "low-star", "leveled"]);
   const high = new Set(["high-a", "high-b"]);
   const runPrioritized = (quota: number, tiers: readonly ReadonlySet<string>[], budget = 100) => {
-    const plan = buildDecisionPlan(items, new Set(["drop"]), header, quota, new Set([...low, ...high]), budget, { tiers, presetRules: [], presetDiscardIds: new Set() });
+    const plan = buildDecisionPlan(items, new Set(["drop"]), header, quota, new Set([...low, ...high]), budget, { tiers, presetRules: [] });
     return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
   };
   assert.deepEqual(runPrioritized(1, [low, high]).finalNewDiscardIds, ["drop"]);
@@ -367,7 +368,7 @@ test("higher-tier reoptimization shares the original global impact cap", () => {
   const wanted = new Set(["marked-a", "marked-b"]);
   const tiers = [new Set(["weak-a", "weak-b"]), new Set(["strong"])];
   const preview = (budget: number) => {
-    const plan = buildDecisionPlan(items, wanted, header, 5, new Set([...tiers.flatMap(tier => [...tier]), "unclassified"]), budget, { tiers, presetRules: [], presetDiscardIds: new Set() });
+    const plan = buildDecisionPlan(items, wanted, header, 5, new Set([...tiers.flatMap(tier => [...tier]), "unclassified"]), budget, { tiers, presetRules: [] });
     return previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
   };
   assert.deepEqual(preview(2).finalNewDiscardIds, ["strong", "marked-a", "marked-b"]);
@@ -380,32 +381,111 @@ test("overlapping discard rules spend one impact slot for the same retained item
     item("marked-b", { name: "火灵", position: 1 }), item("keep", { name: "火灵", position: 2 })
   ];
   const affected = new Set(["shared"]);
-  const plan = buildDecisionPlan(items, new Set(["marked-a", "marked-b"]), header, 3, affected, 1, { tiers: [affected], presetRules: [], presetDiscardIds: new Set() });
+  const plan = buildDecisionPlan(items, new Set(["marked-a", "marked-b"]), header, 3, affected, 1, { tiers: [affected], presetRules: [] });
   const preview = previewDualFilterShares({ items, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
   assert.equal(preview.discardMatch?.groups.filter(group => group.matchedIds.includes("shared")).length, 2);
   assert.deepEqual(preview.finalNewDiscardIds, ["shared", "marked-a", "marked-b"]);
 });
 
-test("preset cleanup remains in the plan at quota zero and reports protected blockers", () => {
+test("original preset cleanup applies all matched levels and reports historical restores even at quota zero", () => {
   const workflow = new YuhunWorkflow();
   const items = [
-    item("preset-drop"), item("overlap", { name: "火灵" }), item("blocked", { name: "针女" }),
-    item("protected", { name: "针女", level: 1 }), item("upgraded", { level: 3 }),
-    item("history", { name: "火灵", garbage: true }), item("supplemental", { name: "破势" })
+    item("preset-drop"), item("overlap", { name: "火灵" }),
+    item("plus1", { name: "针女", level: 1 }), item("plus2", { name: "针女", level: 2 }), item("plus3", { level: 3 }),
+    item("history", { name: "火灵", garbage: true }), item("unmatched-history", { garbage: true }),
+    item("supplemental", { name: "破势" }), item("unmatched-plus1", { name: "破势", level: 1 })
   ];
+  const rules = [rule("d", "discard", "预设清理", ["招财猫", "火灵", "针女"]), rule("e", "enhance", "预设捞回", ["火灵"]), rule("later", "discard", "高等级", ["招财猫"], ["15"])];
   Object.assign(workflow, { items });
   workflow.analyze({
     templateIds: [], riskTier: "tier1", defaultDisposition: "discard", retentionStrategies: defaultRetentionStrategies(),
-    rules: [rule("d", "discard", "预设清理", ["招财猫", "火灵", "针女"]), rule("e", "enhance", "预设捞回", ["火灵"]), rule("later", "discard", "高等级", ["招财猫"], ["15"])]
+    rules
   });
-  const { summary } = workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 0 });
+  const { summary, discardDraft, rescueDraft } = workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 0 });
   assert.equal(summary.requiredRelease, 0);
-  assert.equal(summary.finalNewDiscardCount, 1);
-  assert.equal(summary.incidentalRestoreCount, 0);
-  assert.equal(summary.presetCoverage?.coveredCount, 3);
+  assert.equal(summary.finalNewDiscardCount, 4);
+  assert.equal(summary.incidentalRestoreCount, 1);
+  assert.equal(summary.presetRulesPreserved, true);
+  assert.equal(summary.presetCoverage?.coveredCount, 5);
   assert.equal(summary.presetCoverage?.uncoveredCount, 1);
-  assert.equal(summary.presetCoverage?.blockedDiscardCount, 1);
-  assert.deepEqual(summary.presetCoverage?.rules.map(entry => entry.matchedCount), [3, 1, 0]);
+  assert.equal(summary.presetCoverage?.historicalRestoreCount, 1);
+  assert.deepEqual(summary.presetCoverage?.rules.map(entry => entry.matchedCount), [5, 1, 0]);
+  assert.equal(summary.cleanupComparison?.extraCleanupCount, 0);
+  assert.deepEqual(discardDraft?.groups, [rules[0], rules[2]].map(entry => ({ name: entry!.label, criteria: entry!.criteria })));
+  assert.deepEqual(rescueDraft?.groups, [{ name: rules[1]!.label, criteria: rules[1]!.criteria }]);
+  assert.equal(workflow.getGateState().retainedItemsProtected, true);
+});
+
+test("all 18 built-in groups keep their exact conditions and order before appended optimization", () => {
+  const presetRules = createBuiltinPresetRules();
+  const dGroups = presetRules.filter(entry => entry.pool === "discard").map(({ label, criteria }) => ({ name: label, criteria }));
+  const eGroups = presetRules.filter(entry => entry.pool === "enhance").map(({ label, criteria }) => ({ name: label, criteria }));
+  const empty = buildDecisionPlan([], new Set(), header, 0, undefined, 0, { tiers: [], presetRules });
+  assert.equal(dGroups.length, 12);
+  assert.equal(eGroups.length, 6);
+  assert.deepEqual(empty.discardDraft?.groups, dGroups);
+  assert.deepEqual(empty.rescueDraft?.groups, eGroups);
+  assert.deepEqual(empty.discardDraft?.groups[0]?.criteria?.stars, []);
+  assert.deepEqual(empty.discardDraft?.groups[0]?.criteria?.levelRanges, ["0-2", "3-5", "6-8", "9-11", "12-14"]);
+
+  const target = item("uncovered", { name: "狂骨", position: 1, mainStat: "attack", subStats: { attackPercent: .03, crit: .03, critDamage: .04, hp: 100 } });
+  const extended = buildDecisionPlan([target], new Set([target.id]), header, 1, undefined, 0, { tiers: [], presetRules });
+  assert.deepEqual(extended.discardDraft?.groups.slice(0, 12), dGroups);
+  assert.deepEqual(extended.rescueDraft?.groups, eGroups);
+  assert.deepEqual(extended.discardDraft?.groups[12]?.criteria?.stars, [6]);
+  assert.deepEqual(extended.discardDraft?.groups[12]?.criteria?.levelRanges, ["0-2"]);
+});
+
+test("appended rescue preserves historical and original-discard outcomes with limited D slots", () => {
+  const baseRules = Array.from({ length: 59 }, (_, index) => rule(`d${index}`, "discard", `弃置${index}`, ["针女"]));
+  const presetRules = [...baseRules, rule("e", "enhance", "历史捞回", ["树妖"])];
+  const wanted = new Set(["target-a", "target-b"]);
+  const items = [
+    item("base-drop", { name: "针女" }), item("base-history", { name: "树妖", garbage: true }),
+    item("target-a", { position: 1 }), item("target-b", { position: 2, name: "火灵" }),
+    item("keep-a", { position: 2 }), item("keep-b", { position: 1, name: "火灵" })
+  ];
+  const run = (inventory: YyxYuhun[]) => {
+    const plan = buildDecisionPlan(inventory, wanted, header, 3, undefined, 0, { tiers: [], presetRules });
+    const preview = previewDualFilterShares({ items: inventory, discardShare: plan.discardDraft && filterShareFromDraft(plan.discardDraft), rescueShare: plan.rescueDraft && filterShareFromDraft(plan.rescueDraft) });
+    assert.equal(plan.discardDraft?.groups.length, 60);
+    assert.deepEqual(plan.discardDraft?.groups.slice(0, 59), baseRules.map(({ label, criteria }) => ({ name: label, criteria })));
+    assert.deepEqual(preview.incidentalRestoreIds, ["base-history"]);
+    return { plan, preview };
+  };
+  const expanded = run(items);
+  assert.ok((expanded.plan.rescueDraft?.groups.length ?? 0) > 1);
+  assert.deepEqual(expanded.preview.finalNewDiscardIds, ["base-drop", "target-a", "target-b"]);
+  const blocked = run([...items, item("other-history", { position: 2, garbage: true })]);
+  assert.equal(blocked.preview.finalNewDiscardIds.length, 2);
+  assert.equal(blocked.preview.finalNewDiscardIds[0], "base-drop");
+});
+
+test("preset group limits and names fail explicitly instead of dropping or changing groups", () => {
+  const makeRules = (pool: AnalysisRuleInput["pool"], count: number) => Array.from({ length: count }, (_, index) => rule(`${pool}-${index}`, pool, `规则${index}`, ["针女"]));
+  const target = item("uncovered");
+  const run = (presetRules: AnalysisRuleInput[]) => buildDecisionPlan([target], new Set([target.id]), header, 1, undefined, 0, { tiers: [], presetRules });
+  const full = run([...makeRules("discard", 60), ...makeRules("enhance", 60)]);
+  assert.equal(full.discardDraft?.groups.length, 60);
+  assert.equal(full.rescueDraft?.groups.length, 60);
+  assert.throws(() => run(makeRules("discard", 61)), /60 条规则/);
+  assert.throws(() => run(makeRules("enhance", 61)), /60 条规则/);
+  for (const name of ["", "长".repeat(11)]) assert.throws(() => run([rule("invalid", "discard", name, ["针女"])]), /group name/);
+});
+
+test("five-star preset discards do not satisfy six-star capacity targets or spend impact budget", () => {
+  const workflow = new YuhunWorkflow();
+  Object.assign(workflow, { items: [item("five-star", { star: 5 }), ...Array.from({ length: 6001 }, (_, index) => item(`locked-${index}`, { lock: true }))] });
+  const analysis = workflow.analyze({ templateIds: [], riskTier: "tier1", defaultDisposition: "retain", retentionStrategies: defaultRetentionStrategies(), rules: [rule("d", "discard", "原样清理", ["招财猫"])] });
+  assert.equal(analysis.markedDiscardProjection.discardCount, 0);
+  const { summary } = workflow.generatePlan({ staticPolicy: DEFAULT_STATIC_RETENTION_POLICY, desiredFreeSlots: 0 });
+  assert.equal(summary.requiredRelease, 1);
+  assert.equal(summary.finalNewDiscardCount, 1);
+  assert.equal(summary.capacityProjection?.discardCount, 0);
+  assert.equal(summary.desiredFreeSlotsReached, false);
+  assert.equal(summary.cleanupComparison?.markedCount, 1);
+  assert.equal(summary.cleanupComparison?.extraCleanupCount, 0);
+  assert.deepEqual(summary.retentionImpact?.affectedItems, []);
   assert.equal(workflow.getGateState().retainedItemsProtected, true);
 });
 

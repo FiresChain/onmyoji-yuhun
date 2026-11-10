@@ -37,11 +37,20 @@ const analysis = workflow.analyze({ ...session.settings, templateIds: session.se
 assert.equal(analysis.markedDiscardProjection.discardCount, session.analysis?.markedDiscardProjection.discardCount, "重算标记数量与诊断不一致");
 const items = parseGameSnapshot(JSON.parse(data.snapshotText)).items;
 const decisions = buildYuhunDecisionRows(items, rules, session.teamCalculations, session.settings.defaultDisposition, session.settings.retentionStrategies);
+const presetShare = (pool: AnalysisRuleInput["pool"]) => {
+  const groups = rules.filter(rule => rule.pool === pool).map(rule => ({ name: rule.label, criteria: rule.criteria }));
+  return session.settings.retentionStrategies !== undefined && groups.length
+    ? filterShareFromDraft({ headerHex: "00".repeat(16), planKind: pool, groups }) : null;
+};
+const presetPreview = previewDualFilterShares({ items, discardShare: presetShare("discard"), rescueShare: presetShare("enhance") });
+const presetDiscardIds = new Set(presetPreview.finalNewDiscardIds);
 const eligible = new Set(items.filter((item, index) => {
   const row = decisions[index]!;
   return row.disposition === "retain" && item.star === 6 && item.level === 0 && !item.lock && !item.garbage && !row.matchedRules?.some(rule => rule.pool === "enhance");
 }).map(item => item.id));
-const marked = new Set(items.filter((item, index) => decisions[index]!.disposition === "discard" && item.star === 6 && item.level === 0 && !item.lock && !item.garbage).map(item => item.id));
+const marked = new Set(items.filter((item, index) => !item.lock && !item.garbage && (
+  presetDiscardIds.has(item.id) || (decisions[index]!.disposition === "discard" && item.star === 6 && item.level === 0)
+)).map(item => item.id));
 const desiredFreeSlots = Number(targetText);
 assert.ok(Number.isSafeInteger(desiredFreeSlots) && desiredFreeSlots >= 0);
 const percentages = percentTexts.length ? percentTexts.map(Number) : [0, 1, 3, 5];
@@ -59,7 +68,8 @@ for (const retainedImpactPercent of percentages) {
   assert.ok(affected.length <= impact.budget, "超出允许影响额度");
   assert.equal(new Set(impact.affectedItems.map(row => row.row)).size, affected.length);
   assert.equal(plan.finalNewDiscardCount, preview.finalNewDiscardIds.length);
-  assert.deepEqual(preview.incidentalRestoreIds, []);
+  assert.deepEqual(preview.incidentalRestoreIds, presetPreview.incidentalRestoreIds, "新增规则改变了预置历史捞回范围");
+  assert.ok([...presetDiscardIds].every(id => preview.finalNewDiscardIds.includes(id)), "新增规则改变了预置弃置结果");
   assert.ok(plan.discardGroupCount <= 60 && plan.rescueGroupCount <= 60);
   assert.equal(workflow.getGateState().retainedItemsProtected, true);
   console.log(JSON.stringify({ percent: retainedImpactPercent, budget: impact.budget, affected: affected.length,

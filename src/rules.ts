@@ -754,7 +754,7 @@ function baseDiscardCriteria(discardSuitIds: readonly number[]): FilterCriteriaD
   };
 }
 
-function validateGroupName(name: string): void {
+export function validateGroupName(name: string): void {
   const codePoints = Array.from(name).length;
   const utf8Bytes = new TextEncoder().encode(name).length;
   if (codePoints === 0 || codePoints > MAX_FILTER_GROUP_NAME_CODE_POINTS ||

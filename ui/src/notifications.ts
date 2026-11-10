@@ -18,6 +18,15 @@ export interface ReleaseNotification {
 
 // Add new releases at the beginning with a new, stable version identifier.
 export const RELEASE_NOTIFICATIONS: readonly ReleaseNotification[] = [{
+  version: "2026.11.10.3",
+  date: "2026-11-10",
+  title: "预置规则原样保留",
+  changes: [
+    "生成双码时保留已启用预置规则的名称、条件和顺序，包括没有命中的规则，只在后面追加优化规则。",
+    "预置规则按原有等级、星级和捞回条件执行；新增规则仅处理未覆盖的御魂，并遵守策略优先级和影响比例。",
+    "先前生成的双码需要重新生成。"
+  ]
+}, {
   version: "2026.11.10.2",
   date: "2026-11-10",
   title: "影响比例与策略设置",

@@ -1,4 +1,5 @@
 import { matchFilterShare } from "./matcher.js";
+import { filterShareFromDraft } from "./rules.js";
 import { canonicalYuhunName } from "./mappings.js";
 import type { RetentionStrategyId, RetentionStrategySetting } from "./retention-strategies.js";
 import type { FilterCriteria, StatId, YuhunFilterShare } from "./types.js";
@@ -190,7 +191,10 @@ export function buildYuhunDecisionRows(
   const matches = new Map<string, { discard: string[]; enhance: string[] }>();
   const matchedRules = new Map<string, AnalysisRuleInput[]>();
   for (const rule of rules) {
-    const report = matchFilterShare(ruleShare(rule), items);
+    const share = retentionStrategies === undefined ? ruleShare(rule) : filterShareFromDraft({
+      headerHex: "", planKind: rule.pool, groups: [{ name: rule.label, criteria: rule.criteria }]
+    });
+    const report = matchFilterShare(share, items);
     const group = report.groups[0];
     for (const id of group?.matchedIds ?? []) {
       matchedRules.set(id, [...(matchedRules.get(id) ?? []), rule]);

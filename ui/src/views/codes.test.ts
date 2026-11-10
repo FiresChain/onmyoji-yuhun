@@ -12,13 +12,16 @@ vi.mock("../manual-target-config.js", () => ({ yuhunImage: () => null, yuhunDisp
 describe("generated rule inspection", () => {
   it("shows final free-slot controls and a shortfall independently of copy gates", async () => {
     mockStore.analysis = {};
-    mockStore.plan = { desiredFreeSlots: 500, requiredRelease: 316, finalNewDiscardCount: 126, desiredFreeSlotsReached: false, groups: [] };
+    mockStore.plan = {
+      desiredFreeSlots: 500, requiredRelease: 316, finalNewDiscardCount: 316, desiredFreeSlotsReached: false, groups: [],
+      capacityProjection: { discardCount: 126, after: { totalCount: 5690, capacity: 6000 } }
+    };
     mockStore.setDesiredFreeSlots.mockImplementation(value => { mockStore.desiredFreeSlots = Math.max(0, Math.min(2800, Math.round(value / 100) * 100)); });
     const wrapper = mount(Codes);
     const input = wrapper.get('#desired-free-slots');
     expect(input.attributes('max')).toBe('2800');
     expect(input.attributes('step')).toBe('100');
-    expect(wrapper.text()).toContain('尚差 190 件清理');
+    expect(wrapper.text()).toContain('尚差 190 件六星御魂');
     await input.setValue('3000');
     expect(mockStore.setDesiredFreeSlots).toHaveBeenCalledWith(3000);
     expect((input.element as HTMLInputElement).value).toBe('2800');
@@ -33,7 +36,14 @@ describe("generated rule inspection", () => {
     mockStore.setRetainedImpactPercent.mockImplementation(value => { mockStore.retainedImpactPercent = value; });
     const criteria = { ...emptyYuhunFilter(), positions: [2], mainStats: ["speed"] };
     mockStore.plan = {
-      groups: [],
+      presetRulesPreserved: true,
+      discardGroupCount: 2,
+      rescueGroupCount: 1,
+      groups: [
+        { code: "D", pool: "normal", index: 0, name: "二号防御加成", expected: 5 },
+        { code: "D", pool: "normal", index: 1, name: "补充弃置", expected: 2 },
+        { code: "E", pool: "combined", index: 0, name: "二号双速", expected: 4 }
+      ],
       retentionImpact: {
         percent: 20, eligibleCount: 10, budget: 2, actualPercent: 20,
         affectedItems: [1, 2].map(row => ({ row, suit: "招财猫", position: 2, mainStat: "speed", mainValue: 12, reason: "补出新属性潜力" }))
@@ -44,7 +54,8 @@ describe("generated rule inspection", () => {
           { id: "preset-e", label: "二号双速", pool: "enhance", criteria, matchedCount: 1 }
         ],
         coveredCount: 6,
-        uncoveredCount: 9
+        uncoveredCount: 9,
+        historicalRestoreCount: 3
       },
       strategyRetention: {
         strategies: [{ id: "new-substat", label: "补出新属性潜力", priority: 3, retainedCount: 7, releasedCount: 2 }],
@@ -53,7 +64,11 @@ describe("generated rule inspection", () => {
     };
     const wrapper = mount(Codes, { global: { stubs: { YuhunSuitPicker: true } } });
     const presets = wrapper.get('[aria-labelledby="preset-preview-title"]');
-    expect(presets.text()).toContain("覆盖 6 件 · 未覆盖 9 件");
+    expect(presets.text()).toContain("正常池未锁定御魂命中 6 件 · 历史弃置池捡回 3 件");
+    expect(presets.text()).toContain("未命中预置规则的正常池未锁定六星 +0 御魂 9 件");
+    expect(wrapper.get('[aria-label="弃置码"]').text()).toContain("预置 1 组 · 追加 1 组");
+    expect(wrapper.get('[data-testid="preview-rule-D-0"]').text()).toContain("预置 · 全部御魂套装");
+    expect(wrapper.get('[data-testid="preview-rule-D-1"]').text()).toContain("追加 · 全部御魂套装");
     expect(presets.text()).toContain("命中 5 件");
     const strategy = wrapper.get('[aria-labelledby="strategy-preview-title"]');
     expect(strategy.text()).toContain("策略让步共 2 件");

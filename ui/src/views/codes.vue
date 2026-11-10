@@ -112,15 +112,24 @@ function updateRetainedImpactPercent(event: Event): void {
   store.setRetainedImpactPercent(Number(input.value));
   input.value = String(store.retainedImpactPercent);
 }
-const targetShortfall = computed(() => Math.max(0, (store.plan?.requiredRelease ?? 0) - (store.plan?.finalNewDiscardCount ?? 0)));
+const finalSixStarDiscardCount = computed(() => store.plan?.capacityProjection?.discardCount ?? store.plan?.finalNewDiscardCount ?? 0);
+const targetShortfall = computed(() => {
+  const after = store.plan?.capacityProjection?.after;
+  return after
+    ? Math.max(0, after.totalCount + (store.plan?.desiredFreeSlots ?? 0) - after.capacity)
+    : Math.max(0, (store.plan?.requiredRelease ?? 0) - finalSixStarDiscardCount.value);
+});
 function updateDesiredFreeSlots(event: Event): void {
   const input = event.target as HTMLInputElement;
   store.setDesiredFreeSlots(input.value === "" ? 500 : Number(input.value));
   input.value = String(store.desiredFreeSlots);
 }
+function presetRuleCount(pool: "discard" | "enhance"): number {
+  return store.plan?.presetCoverage?.rules.filter(rule => rule.pool === pool).length ?? 0;
+}
 const codePools = computed(() => ([
-  { kind: "discard" as const, code: "D", title: "弃置码", pool: "正常池", count: store.plan?.discardGroupCount ?? 0, value: store.plan?.discardCode, groups: store.plan?.groups.filter(group => group.code === "D") ?? [] },
-  { kind: "rescue" as const, code: "E", title: "捡回码", pool: "弃置池", count: store.plan?.rescueGroupCount ?? 0, value: store.plan?.rescueCode, groups: store.plan?.groups.filter(group => group.code === "E" && group.pool === "combined") ?? [] }
+  { kind: "discard" as const, code: "D", title: "弃置码", pool: "正常池", count: store.plan?.discardGroupCount ?? 0, presetCount: presetRuleCount("discard"), value: store.plan?.discardCode, groups: store.plan?.groups.filter(group => group.code === "D") ?? [] },
+  { kind: "rescue" as const, code: "E", title: "捡回码", pool: "弃置池", count: store.plan?.rescueGroupCount ?? 0, presetCount: presetRuleCount("enhance"), value: store.plan?.rescueCode, groups: store.plan?.groups.filter(group => group.code === "E" && group.pool === "combined") ?? [] }
 ]));
 const poolLabels = { normal: "正常池", "new-garbage": "新弃置池", "historical-garbage": "历史弃置池", combined: "合并弃置池" };
 type PreviewGroup = PlanSummaryDTO["groups"][number];
@@ -185,7 +194,7 @@ function statValue(stat: StatId, value: number | undefined): string {
         <input id="retained-impact-percent" type="number" inputmode="decimal" min="0" max="100" step="0.1" :value="store.retainedImpactPercent" :disabled="!!store.busy" aria-describedby="retained-impact-help" @change="updateRetainedImpactPercent" /> %
       </label>
       <span id="retained-impact-help">正常池未锁定六星 +0 保留项共 {{ (store.analysis.impactEligibleCount ?? 0).toLocaleString() }} 件，已排除强化规则命中项。最多额外清理 {{ store.retainedImpactLimit.toLocaleString() }} 件。</span>
-      <span id="capacity-target-help">本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件 · 空位目标上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}</span>
+      <span id="capacity-target-help">本次至少需清理 {{ store.requiredReleaseForTarget.toLocaleString() }} 件六星御魂 · 空位目标上限 {{ store.desiredFreeSlotsMaximum.toLocaleString() }}</span>
       <span>优先级决定让步顺序，比例限制让步总量。</span>
     </div>
     <div class="code-generation-buttons">
@@ -197,10 +206,10 @@ function statValue(stat: StatId, value: number | undefined): string {
 
   <template v-if="store.plan">
     <div v-if="store.plan.desiredFreeSlots !== undefined" class="capacity-target-result" role="status" :class="{ 'target-unmet': !store.plan.desiredFreeSlotsReached }">
-      <strong>预期空位 {{ store.plan.desiredFreeSlots.toLocaleString() }} · {{ store.plan.desiredFreeSlotsReached ? '预演达标' : `尚差 ${targetShortfall.toLocaleString()} 件清理` }}</strong>
+      <strong>预期空位 {{ store.plan.desiredFreeSlots.toLocaleString() }} · {{ store.plan.desiredFreeSlotsReached ? '预演达标' : `尚差 ${targetShortfall.toLocaleString()} 件六星御魂` }}</strong>
       <span v-if="store.plan.requiredRelease === 0 && store.plan.finalNewDiscardCount > 0">当前库存已满足空位目标，本次仅执行预置方案，预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件。</span>
       <span v-else-if="store.plan.requiredRelease === 0">当前库存已满足空位目标，本次无需弃置。</span>
-      <span v-else-if="store.plan.desiredFreeSlotsReached">本次预计清理 {{ store.plan.finalNewDiscardCount.toLocaleString() }} 件；规则整组执行，可能超过目标。</span>
+      <span v-else-if="store.plan.desiredFreeSlotsReached">本次预计清理 {{ finalSixStarDiscardCount.toLocaleString() }} 件六星御魂。</span>
       <span v-else>当前规则和影响比例上限下，尚未达到空位目标。</span>
       <span>仅标记弃置不会立即增加空位；这里预估的是最终消耗或移除这些御魂后的容量。</span>
     </div>
@@ -222,8 +231,8 @@ function statValue(stat: StatId, value: number | undefined): string {
       <div class="section-toolbar unframed">
         <div>
           <h2 id="preset-preview-title">预置方案命中</h2>
-          <span>覆盖 {{ store.plan.presetCoverage.coveredCount.toLocaleString() }} 件 · 未覆盖 {{ store.plan.presetCoverage.uncoveredCount.toLocaleString() }} 件（正常池未锁定六星 +0）</span>
-          <span v-if="store.plan.presetCoverage.blockedDiscardCount">有 {{ store.plan.presetCoverage.blockedDiscardCount.toLocaleString() }} 件命中弃置条件，受安全限制未纳入双码。</span>
+          <span>正常池未锁定御魂命中 {{ store.plan.presetCoverage.coveredCount.toLocaleString() }} 件 · 历史弃置池捡回 {{ (store.plan.presetCoverage.historicalRestoreCount ?? 0).toLocaleString() }} 件</span>
+          <span>未命中预置规则的正常池未锁定六星 +0 御魂 {{ store.plan.presetCoverage.uncoveredCount.toLocaleString() }} 件</span>
         </div>
       </div>
       <div class="preset-pools generated-code-pools">
@@ -249,11 +258,11 @@ function statValue(stat: StatId, value: number | undefined): string {
       </div>
       <div v-else class="preset-empty">未启用保留策略</div>
     </section>
-    <div class="section-toolbar unframed"><div><h2>双码规则</h2></div><span class="tag">只读</span></div>
+    <div class="section-toolbar unframed"><div><h2>双码规则</h2><span v-if="store.plan.presetRulesPreserved">保留预置规则的名称、条件和顺序，补充规则追加在末尾。</span></div><span class="tag">只读</span></div>
     <div class="preset-pools generated-code-pools">
       <article v-for="pool in codePools" :key="pool.code" class="preset-pool" :class="{ 'discard-pool': pool.kind === 'discard' }" :aria-label="pool.title">
         <header class="preset-pool-header">
-          <div><span>{{ pool.code === 'D' ? 'DISCARD / D' : 'RESCUE / E' }}</span><h3>{{ pool.title }}</h3><p>{{ pool.count }} 组 · {{ pool.pool }}</p></div>
+          <div><span>{{ pool.code === 'D' ? 'DISCARD / D' : 'RESCUE / E' }}</span><h3>{{ pool.title }}</h3><p v-if="store.plan.presetRulesPreserved">预置 {{ pool.presetCount }} 组 · 追加 {{ pool.count - pool.presetCount }} 组 · {{ pool.pool }}</p><p v-else>{{ pool.count }} 组 · {{ pool.pool }}</p></div>
           <div class="code-actions">
             <button class="icon-button" :title="`复制${pool.title}`" :disabled="!store.copyAllowed || !pool.value" @click="store.copyCode(pool.kind)"><Clipboard :size="17" /></button>
             <button class="icon-button" :title="`导出${pool.title}二维码图片`" :disabled="!store.copyAllowed || !pool.value" @click="store.downloadCode(pool.kind)"><Download :size="17" /></button>
@@ -262,7 +271,7 @@ function statValue(stat: StatId, value: number | undefined): string {
         <div class="generated-code-value"><label :for="`generated-code-${pool.code}`">{{ pool.title }}</label><textarea :id="`generated-code-${pool.code}`" readonly :value="pool.value ?? `当前方案无需 ${pool.code} 码`" rows="3"></textarea></div>
         <div class="generated-rule-list">
           <div v-for="group in pool.groups" :key="`${pool.code}:${group.index}`" class="generated-rule" :data-testid="`preview-rule-${pool.code}-${group.index}`">
-            <div class="generated-rule-row"><span class="generated-rule-name"><strong>{{ group.name }}</strong><small>{{ group.criteria?.types.join(' / ') || '全部御魂套装' }}</small></span><span class="generated-rule-count">命中 {{ group.expected.toLocaleString() }} 件</span>
+            <div class="generated-rule-row"><span class="generated-rule-name"><strong>{{ group.name }}</strong><small><template v-if="store.plan.presetRulesPreserved">{{ group.index < pool.presetCount ? '预置' : '追加' }} · </template>{{ group.criteria?.types.join(' / ') || '全部御魂套装' }}</small></span><span class="generated-rule-count">命中 {{ group.expected.toLocaleString() }} 件</span>
               <div class="generated-rule-actions"><button class="icon-button" title="查看规则" aria-label="查看规则" @click="viewedRule = group"><Eye :size="16" /></button><button class="icon-button" title="查看命中御魂" aria-label="查看命中御魂" @click="viewHits(group)"><Search :size="16" /></button></div>
             </div>
           </div>

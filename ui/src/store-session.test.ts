@@ -419,10 +419,12 @@ describe("dual-code session persistence", () => {
     await first.generatePlan();
     expect(first.plan?.retentionImpact?.percent).toBe(12.5);
     expect(first.plan?.strategyRetention).toBeDefined();
+    expect(first.plan?.presetRulesPreserved).toBe(true);
     const restored = newStore();
     await restored.restoreLocalSession();
     expect(restored.retainedImpactPercent).toBe(12.5);
     expect(restored.plan?.retentionImpact?.percent).toBe(12.5);
+    expect(restored.plan?.presetRulesPreserved).toBe(true);
     expect(restored.copyAllowed).toBe(true);
     saved = { ...saved, session: { ...saved.session, settings: { ...saved.session.settings, retainedImpactPercent: 2.5 } } };
     const changed = newStore();
@@ -444,6 +446,44 @@ describe("dual-code session persistence", () => {
     expect(restored.retainedImpactPercent).toBe(0);
     expect(restored.plan).toBeNull();
     expect(restored.copyAllowed).toBe(false);
+  });
+  it("requires regenerating saved plans from before presets were preserved", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    await first.generatePlan();
+    expect(first.copyAllowed).toBe(true);
+    const { presetRulesPreserved: _removed, ...rewrittenPlan } = saved.session.plan!;
+    expect(rewrittenPlan.retentionImpact).toBeDefined();
+    expect(rewrittenPlan.strategyRetention).toBeDefined();
+    saved = { ...saved, session: { ...saved.session, plan: rewrittenPlan } };
+    const restored = newStore();
+    await restored.restoreLocalSession();
+    expect(restored.analysis).not.toBeNull();
+    expect(restored.plan).toBeNull();
+    expect(restored.copyAllowed).toBe(false);
+    expect(restored.notice).toContain("重新生成双码");
+  });
+  it("verifies saved preset prefixes against the current enabled criteria", async () => {
+    const first = newStore();
+    await first.restoreLocalSession();
+    first.savePresetRule({ pool: "discard", label: "本地弃置", suits: ["招财猫"], positions: [], mainStats: [], requiredSubStats: [], subStatCounts: [] });
+    expect(await first.setRetentionStrategies(first.retentionStrategies)).toBe(true);
+    await first.generatePlan();
+    expect(first.copyAllowed).toBe(true);
+    const verified = newStore();
+    await verified.restoreLocalSession();
+    expect(verified.copyAllowed).toBe(true);
+    const plan = saved.session.plan!;
+    const prefix = plan.groups.find(group => group.code === "D" && group.index === 0)!;
+    expect(prefix.name).toBe("本地弃置");
+    expect(prefix.criteria?.positions).toEqual([]);
+    const groups = plan.groups.map(group => group === prefix ? { ...group, criteria: { ...group.criteria!, positions: [6] } } : group);
+    saved = { ...saved, session: { ...saved.session, plan: { ...plan, groups } } };
+    const mismatched = newStore();
+    await mismatched.restoreLocalSession();
+    expect(mismatched.analysis).not.toBeNull();
+    expect(mismatched.plan).toBeNull();
+    expect(mismatched.copyAllowed).toBe(false);
   });
   it("does not restore copy permission when the cleanup and impact counts disagree", async () => {
     const first = newStore();

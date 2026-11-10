@@ -220,6 +220,24 @@ function builtInPresetRules(): PresetRule[] {
   }));
 }
 
+function presetPrefixesMatch(plan: PlanSummaryDTO, rules: readonly AnalysisRuleInput[]): boolean {
+  if (!Array.isArray(plan.groups)) return false;
+  try {
+    return (["discard", "enhance"] as const).every(planKind => {
+      const expected = rules.filter(rule => rule.pool === planKind).map(rule => ({ name: rule.label, criteria: rule.criteria }));
+      const code = planKind === "discard" ? "D" : "E";
+      const pool = planKind === "discard" ? "normal" : "combined";
+      const prefix = plan.groups.filter(group => group.code === code && group.pool === pool).slice(0, expected.length);
+      if (prefix.length !== expected.length || prefix.some((group, index) => group.index !== index || !group.criteria)) return false;
+      const canonical = (groups: { name: string; criteria: FilterCriteria }[]) =>
+        JSON.stringify(filterShareFromDraft({ headerHex: "0".repeat(32), planKind, groups }).groups);
+      return canonical(prefix.map(group => ({ name: group.name, criteria: group.criteria! }))) === canonical(expected);
+    });
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_POLICY: StaticRetentionPolicy = {
   id: "technical-draft-v1",
   confirmed: true,
@@ -970,13 +988,14 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         ? {}
         : JSON.parse(JSON.stringify(stored.session.teamCalculationOptions)) as TeamCalculationRunOptions;
       teamCalculationPaused.value = stored.session.teamCalculationPaused === true || Object.values(teamCalculationProgress.value).some((entry) => entry.status === "pending");
+      const restoredRules = analysisRules();
       if (stored.session.analysis !== null) {
         analysis.value = await client.analyze({
           defaultDisposition: defaultDisposition.value,
           templateIds: templateIds.value,
           riskTier: riskTier.value,
           budgetPerTenThousand: riskTier.value === "tier0" ? 0 : budgetPerTenThousand.value,
-          rules: analysisRules(),
+          rules: restoredRules,
           retentionStrategies: normalizeRetentionStrategies(retentionStrategies.value),
           teamReports: teamCalculations.value
         });
@@ -995,10 +1014,10 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         yuhunDecisions.value = stored.session.yuhunDecisions ?? null;
         yuhunDecisionFacets.value = null;
       }
-      // Reuse gates only for a plan generated with the current strategies and impact limit.
+      // Reuse gates only for append-only plans generated with the current strategies and impact limit.
       const savedPlan = stored.session.plan;
       const impact = savedPlan?.retentionImpact;
-      plan.value = sameStrategies && savedPlan?.strategyRetention && impact
+      plan.value = sameStrategies && savedPlan?.presetRulesPreserved === true && savedPlan.strategyRetention && impact
         && impact.percent === retainedImpactPercent.value
         && impact.eligibleCount === analysis.value?.impactEligibleCount
         && impact.budget === retainedImpactLimit.value
@@ -1006,6 +1025,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         && impact.affectedItems.length <= impact.budget
         && impact.affectedItems.length === savedPlan.strategyRetention.releasedCount
         && impact.affectedItems.length === savedPlan.cleanupComparison?.extraCleanupCount
+        && presetPrefixesMatch(savedPlan, restoredRules)
         ? savedPlan : null;
       simulation.value = plan.value === null ? null : stored.session.simulation ?? null;
       checklist.value = plan.value === null ? null : stored.session.checklist ?? null;
@@ -1018,7 +1038,7 @@ export const useWorkbenchStore = defineStore("workbench", () => {
         : JSON.parse(JSON.stringify(stored.session.viewState)) as WorkbenchViewStateV1;
       targetCatalog.value = mergePublishedCatalog(TARGET_CATALOG, targetViewState.value?.catalog);
       notice.value = savedPlan && plan.value === null
-        ? "已恢复工作台。双码需按当前策略和影响比例重新生成。"
+        ? "已恢复工作台。请按当前预置规则和策略重新生成双码。"
         : "已恢复上次工作台会话；数据仅保存在本机浏览器";
     } catch (reason) {
       rawSnapshotBuffer = null;

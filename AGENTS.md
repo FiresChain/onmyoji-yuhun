@@ -220,18 +220,19 @@ This is the main configuration surface.
   optimization. A candidate matching multiple enabled strategies belongs to its
   highest priority, so it is never counted or released twice.
 - When the free-slot target is unmet, low-priority strategy retention yields
-  before higher priorities within the global impact allowance. Preset rescue
-  and existing hard inventory protections remain protected. Legacy evidence
+  before higher priorities within the global impact allowance. Incremental
+  rules cannot change any preset-covered disposition. Legacy evidence
   without an explicit new-substat classification stays protected until the
   user recalculates the affected teams.
 - The desired free-slot input means final inventory free slots, defaults to 500,
   and is capped at the greatest nonnegative multiple of 100 strictly below the
-  sum of marked-discard and releasable strategy counts (2831 -> 2800,
+  sum of six-star marked-discard and releasable strategy counts (2831 -> 2800,
   1799 -> 1700, 2800 -> 2700). A count of 100 or fewer gives a zero target.
   Changes persist in session/project settings and
   invalidate only the generated plan. The Worker derives the required release
-  from current capacity (including overflow), applies the safely expressible
-  preset base first, and stops supplemental rules after reaching the quota.
+  from current capacity (including overflow), applies the original preset
+  base first, and stops supplemental rules after reaching the quota. Non-six-star
+  preset discards do not count toward the six-star free-slot target.
   It reports whether the target was reached. Insufficient coverage does
   not imply a safety failure; the existing safety gates remain independent.
 - Strategy priority and retained-item impact percentage work together: priority
@@ -239,18 +240,27 @@ This is the main configuration surface.
   retain items across every tier. The percentage defaults to 0; its denominator
   is retained, unlocked, nonhistorical six-star +0 inventory excluding every
   enabled enhancement-rule match, and its budget rounds down to whole items.
-  Existing hard protection and preset rescue matches cannot yield. Changes to
+  Incremental hard protection and preset rescue matches cannot yield. Changes to
   the percentage invalidate only the generated plan. The free-slot limit still
   includes releasable strategy candidates; an allowance may leave a shortfall.
 - Preview displays the actual impact percentage, affected-item details, and
   per-strategy counts together. Restored priority plans without a verified
   percentage allowance must be regenerated; the independent plan library stays
   intact.
-- Preview shows enabled preset conditions and their coverage, plus actual
-  retained/released counts by strategy. Preset conditions are adapted to the
-  safe cleanup domain when generating executable rules; the original preset
-  is not permission to discard upgraded items or restore historical discards.
-  Any preset discard matches that cannot be safely expressed are reported.
+- Enabled preset D and E rules are copied unchanged as the prefixes of the
+  generated codes: preserve names, criteria, order, and zero-match rules even
+  when the quota is zero. Never narrow, merge, rename, or remove preset rules.
+  The user's original level/star restrictions and historical rescue semantics
+  apply exactly. Rules exceeding the game's limits report an error rather than
+  being silently rewritten. The current account ID still comes from Settings.
+- Only appended rules are optimized, using the remaining group slots after the
+  preset prefixes. They can affect only unmatched, unlocked normal six-star +0
+  items; they cannot change preset outcomes or restore additional historical
+  discards. Preset effects are excluded from the incremental impact allowance.
+  Preview reports original coverage, original historical rescues, incremental
+  strategy effects, and six-star capacity separately. Previously rewritten
+  priority plans must be regenerated; preserved prefixes are verified before
+  reusing saved gates.
 - Generation still returns one D/E pair. Multi-round experiments and safe reuse
   of E are documented in the internal research repository, not implemented as
   a multi-round execution UI. E is used to restore items from the discard pool,
@@ -259,10 +269,10 @@ This is the main configuration surface.
   inventory using the shared preview matcher. It compares exact and merged
   pure-D coverage, then jointly expands D through safe E protection when the
   quota remains unmet. Each code stays within 60 groups; selection counts only
-  newly covered targets. E cannot restore historical discards or separable
-  targets in the zero-impact search, and unused E rules are removed. Indistinguishable retain/discard
-  classes remain protected at zero allowance; normal +1/+2 items are always
-  protected. The bounded search is a
+  newly covered targets. Appended E cannot restore historical discards or
+  separable targets in the zero-impact search, and unused appended E rules are
+  removed. Indistinguishable retain/discard classes remain protected at zero
+  allowance; incremental rules always protect normal +1/+2 items. The bounded search is a
   current-snapshot heuristic, not a global optimum or future-inventory proof.
 - Generates and previews the D discard and E rescue codes directly after
   analysis. The frontend sends the ID saved in Settings to the encode API;
